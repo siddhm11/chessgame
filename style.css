@@ -1,0 +1,72 @@
+#gameboard{
+   width:640px;
+   height:640px ;
+   display:flex;
+   flex-wrap: wrap;
+
+}
+
+.square svg {
+    height: 60px;
+    width: 60px;
+    margin: 10px;
+    position: relative;
+    z-index: -9;
+}
+
+.path{
+    position: relative;
+    z-index: -10;
+}
+
+.piece{
+    position: relative;
+    z-index: 9;   /* here the piece is on top so we drag the piece in the start insteead of the square or soemthing so we select the piece and interact woiht it */
+}
+.square{
+    height:80px;
+    width:80px;
+    position:relative;
+
+
+}
+
+.beige{
+    background-color: rgb(179, 179, 159);
+}
+
+.brown{
+    background-color: rgb(168, 121, 77);
+}
+
+.black{
+    fill:rgb(28,28,28)
+}
+
+.white{
+    fill: rgb(255,255,255)
+}
+
+.centerthisdiv{
+    display:flex;
+    justify-content: center;
+    align-items: center;
+    align-content: center;
+    margin: 20px;
+
+}
+
+#info-display{
+    font-weight:bold;
+    font-style: sans-serif;
+
+}
+.beige50{
+    background-color: rgb(197, 197, 109);
+    
+}
+
+.brown50{
+    background-color:rgb(170, 106, 46);
+    
+}
