@@ -65,3 +65,12 @@ def test_multipv_lines_are_distinct():
     result = engine.analyse(EQUAL_MIDDLEGAME, multipv=3)
     ucis = [c.uci for c in result.candidates]
     assert len(ucis) == len(set(ucis))
+
+
+def test_candidates_carry_a_principal_variation():
+    result = engine.analyse(EQUAL_MIDDLEGAME, multipv=3)
+    for cand in result.candidates:
+        assert cand.line, "each candidate should have a SAN principal variation"
+    # The PV line should begin with the candidate's own move.
+    top = result.candidates[0]
+    assert top.san.rstrip("+#") in top.line

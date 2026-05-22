@@ -61,6 +61,7 @@ class Candidate:
     uci: str
     san: str
     eval_text: str
+    line: str = ""  # principal variation in SAN, e.g. "1. e4 e5 2. Nf3"
 
 
 @dataclass
@@ -171,11 +172,16 @@ def analyse(
         if not pv or score is None:
             continue
         move = pv[0]
+        try:
+            line = board.variation_san(pv[:10])
+        except ValueError:
+            line = board.san(move)
         candidates.append(
             Candidate(
                 uci=move.uci(),
                 san=board.san(move),
                 eval_text=_format_score(score, board.turn),
+                line=line,
             )
         )
 

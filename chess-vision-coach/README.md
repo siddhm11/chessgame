@@ -64,10 +64,15 @@ uvicorn app.main:app --port 8000 --workers 1
 1. Open <http://localhost:8000>.
 2. Upload a chessboard photo. Choose **which side is closer to the camera**
    and **whose move it is**.
-3. The parsed board appears next to your photo with a confidence indicator.
-4. **Click any square** to correct a misread piece (or empty it).
-5. Click **Get best move** — Stockfish returns the best move (drawn as an
-   arrow), an evaluation, and the top 3 candidate moves.
+3. The parsed board appears next to your photo with an overall confidence
+   score. Squares the vision pass was unsure about are **tinted amber/red**
+   so you can see exactly what to check.
+4. **Click any square** to correct a misread piece (or empty it). The clicked
+   square is highlighted, and once you fix it the tint clears.
+5. Pick an engine **strength** (Fast / Normal / Strong) and click **Get best
+   move** — Stockfish returns the best move (drawn as an arrow), an
+   evaluation, the **principal-variation line** for each of the top 3
+   candidates, and a button to **play the suggested move on the board**.
 6. Copy or download the FEN at any time.
 
 ### Command-line vision pipeline

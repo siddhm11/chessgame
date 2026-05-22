@@ -1,6 +1,8 @@
 {# Inner content of #board-container: the rendered board SVG plus a
    transparent 8x8 grid of click-to-correct buttons. The grid is inset to
-   match python-chess's coordinate margin (15 of a 390-unit board). #}
+   match python-chess's coordinate margin (15 of a 390-unit board).
+   Low-confidence squares are tinted by the SVG `fill`; the legend below
+   explains the tint. #}
 <div class="board">
   {{ board_svg | safe }}
   <div class="square-grid">
@@ -11,3 +13,12 @@
     {% endfor %}{% endfor %}
   </div>
 </div>
+{% if low_conf_count %}
+<div class="conf-legend">
+  <span class="conf-chip conf-chip-red"></span> low confidence
+  <span class="conf-chip conf-chip-amber"></span> uncertain
+  <span class="conf-legend-note">
+    {{ low_conf_count }} square{{ '' if low_conf_count == 1 else 's' }} worth a check
+  </span>
+</div>
+{% endif %}

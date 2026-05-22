@@ -28,7 +28,7 @@ BASE_URL = "http://localhost:8000"
 OUT = ROOT / "docs" / "screenshot.png"
 
 # Fixed canvas so the two-column desktop layout is captured in one page.
-PAGE_CSS = CSS(string="@page { size: 1180px 1120px; margin: 0; }")
+PAGE_CSS = CSS(string="@page { size: 1180px 1320px; margin: 0; }")
 
 
 def main() -> int:
@@ -41,6 +41,16 @@ def main() -> int:
             files={"image": ("starting.png", fh, "image/png")},
             data={"orientation": "white", "side_to_move": "white"},
         ).text
+
+    # Also run the engine so the screenshot shows the populated best-move
+    # panel. The /best-move response is [panel content] + [OOB board]; keep
+    # just the panel content and splice it into the empty panel div.
+    bestmove = client.post("/best-move", data={"level": "normal"}).text
+    panel = bestmove.split('<div id="board-container"', 1)[0]
+    fragment = fragment.replace(
+        '<div id="best-move-panel" class="best-move-panel"></div>',
+        f'<div id="best-move-panel" class="best-move-panel">{panel}</div>',
+    )
 
     full = re.sub(
         r'(<main id="app">).*?(</main>)',

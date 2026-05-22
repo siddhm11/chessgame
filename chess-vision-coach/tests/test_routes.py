@@ -2,11 +2,12 @@
 
 from pathlib import Path
 
+import chess
 import pytest
 from fastapi.testclient import TestClient
 
 from app import engine
-from app.main import app
+from app.main import app, confidence_fill
 
 FIXTURES = Path(__file__).parent / "fixtures"
 STARTING_OPENINGS = {"e2e4", "d2d4", "g1f3", "c2c4", "b1c3", "g2g3"}
@@ -103,7 +104,7 @@ def test_best_move_on_starting_position():
     _upload_starting(client)
     resp = client.post("/best-move")
     assert resp.status_code == 200
-    assert "Best move:" in resp.text
+    assert "Best move" in resp.text
     # The board is swapped back out-of-band with the move arrow.
     assert 'id="board-container"' in resp.text
 
@@ -136,3 +137,39 @@ def test_download_fen_is_plain_text():
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain")
     assert resp.text.startswith("rnbqkbnr/pppppppp")
+
+
+def test_play_move_applies_a_legal_move():
+    client = _client()
+    _upload_starting(client)
+    resp = client.post("/play-move", data={"move": "e2e4"})
+    assert resp.status_code == 200
+    # After 1.e4 the pawn is on e4 and it is Black to move.
+    assert "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b" in resp.text
+
+
+def test_play_move_ignores_an_illegal_move():
+    client = _client()
+    _upload_starting(client)
+    resp = client.post("/play-move", data={"move": "e2e5"})  # not legal
+    assert resp.status_code == 200
+    assert "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR" in resp.text
+
+
+@pytest.mark.skipif(
+    engine.find_stockfish() is None, reason="Stockfish not installed"
+)
+def test_best_move_accepts_strength_level():
+    client = _client()
+    _upload_starting(client)
+    resp = client.post("/best-move", data={"level": "fast"})
+    assert resp.status_code == 200
+    assert "Best move" in resp.text
+
+
+def test_confidence_fill_tiers_squares():
+    fill = confidence_fill({"e4": 0.30, "d4": 0.70, "a1": 0.99})
+    assert chess.parse_square("e4") in fill  # low confidence -> tinted
+    assert chess.parse_square("d4") in fill  # uncertain -> tinted
+    assert chess.parse_square("a1") not in fill  # confident -> not tinted
+    assert confidence_fill(None) == {}

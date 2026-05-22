@@ -29,6 +29,9 @@ class Session:
     side_to_move: str = "w"
     detection_failed: bool = False
     confidence: float = 0.0
+    # Per-square confidence from the vision pass, used to tint shaky squares.
+    # Set to None once the position is changed by playing a move.
+    per_square_confidence: dict | None = None
 
 
 class SessionStore:

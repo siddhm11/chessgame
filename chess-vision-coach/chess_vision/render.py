@@ -29,8 +29,13 @@ def board_svg(
     arrows: list | None = None,
     check: int | None = None,
     coordinates: bool = True,
+    fill: dict | None = None,
 ) -> str:
-    """Return an SVG string for the given FEN (placement-only FEN accepted)."""
+    """Return an SVG string for the given FEN (placement-only FEN accepted).
+
+    `fill` maps square ints to a CSS color, used to tint squares (e.g. to
+    flag low-confidence detections).
+    """
     board = chess.Board(_normalize_fen(fen))
     return chess.svg.board(
         board,
@@ -39,6 +44,7 @@ def board_svg(
         arrows=arrows or [],
         check=check,
         coordinates=coordinates,
+        fill=fill or {},
     )
 
 

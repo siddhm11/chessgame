@@ -33,6 +33,17 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 BOARD_SIZE = 480
 
+# Per-square confidence thresholds for tinting the board.
+CONF_CHECK = 0.55  # below this: red tint ("definitely check this square")
+CONF_MAYBE = 0.80  # below this: amber tint ("uncertain")
+
+# Engine strength presets -> (depth, time-limit seconds).
+ENGINE_LEVELS = {
+    "fast": (12, 0.4),
+    "normal": (18, 1.0),
+    "strong": (22, 2.0),
+}
+
 PIECE_CODES = {
     "wK": "K", "wQ": "Q", "wR": "R", "wB": "B", "wN": "N", "wP": "P",
     "bK": "k", "bQ": "q", "bR": "r", "bB": "b", "bN": "n", "bP": "p",
@@ -81,10 +92,36 @@ def fen_problem(fen: str | None) -> str | None:
     return "Invalid position: " + "; ".join(found) + "."
 
 
-def board_svg(fen: str, *, arrows: list | None = None) -> str:
-    return render.board_svg(
-        fen, size=BOARD_SIZE, coordinates=True, arrows=arrows or []
-    )
+def confidence_fill(psc: dict | None) -> dict:
+    """Map low-confidence squares to a tint color for the board SVG."""
+    fill: dict = {}
+    for name, conf in (psc or {}).items():
+        try:
+            square = chess.parse_square(name)
+        except ValueError:
+            continue
+        if conf < CONF_CHECK:
+            fill[square] = "#e0413188"
+        elif conf < CONF_MAYBE:
+            fill[square] = "#f0a93188"
+    return fill
+
+
+def board_view(session, *, arrows: list | None = None) -> dict:
+    """Board-fragment context: the rendered SVG (with low-confidence squares
+    tinted) plus how many squares are still flagged for the user to check."""
+    fen = session.fen or ""
+    fill = confidence_fill(session.per_square_confidence)
+    svg = ""
+    if fen:
+        svg = render.board_svg(
+            fen,
+            size=BOARD_SIZE,
+            coordinates=True,
+            arrows=arrows or [],
+            fill=fill,
+        )
+    return {"board_svg": svg, "low_conf_count": len(fill)}
 
 
 def _session_from_request(request: Request):
@@ -98,7 +135,7 @@ def _with_cookie(response: Response, sid: str) -> Response:
 
 
 def _analyze_context(request: Request, session) -> dict:
-    return {
+    ctx = {
         "request": request,
         "fen": session.fen or "",
         "image_url": session.original_image_url or "",
@@ -106,9 +143,10 @@ def _analyze_context(request: Request, session) -> dict:
         "side_to_move": session.side_to_move,
         "detection_failed": session.detection_failed,
         "confidence": session.confidence,
-        "board_svg": board_svg(session.fen) if session.fen else "",
         "fen_error": fen_problem(session.fen),
     }
+    ctx.update(board_view(session))
+    return ctx
 
 
 # --------------------------------------------------------------------------
@@ -172,6 +210,7 @@ async def analyze(
     session.side_to_move = side_to_move
     session.detection_failed = result.detection_failed
     session.confidence = result.confidence
+    session.per_square_confidence = result.per_square_confidence
 
     resp = templates.TemplateResponse(
         request, "_analyze.html", _analyze_context(request, session)
@@ -206,25 +245,28 @@ def correct(
             base.set_piece_at(target, chess.Piece.from_symbol(PIECE_CODES[piece]))
         parts[0] = base.board_fen()
         session.fen = " ".join(parts)
+        # The user has just vouched for this square -- it is no longer shaky.
+        if session.per_square_confidence is not None:
+            session.per_square_confidence[square.strip().lower()] = 1.0
 
     context = {
         "request": request,
         "fen": session.fen,
-        "board_svg": board_svg(session.fen),
         "fen_error": fen_problem(session.fen),
     }
+    context.update(board_view(session))
     resp = templates.TemplateResponse(request, "_correct.html", context)
     return _with_cookie(resp, sid)
 
 
 @app.post("/best-move", response_class=HTMLResponse)
-def best_move(request: Request) -> Response:
+def best_move(request: Request, level: str = Form("normal")) -> Response:
     sid, session = _session_from_request(request)
+    depth, time_limit = ENGINE_LEVELS.get(level, ENGINE_LEVELS["normal"])
 
-    def panel(**extra) -> Response:
-        ctx = {"request": request, "result": None, "error": None,
-               "board_svg": board_svg(session.fen) if session.fen else ""}
-        ctx.update(extra)
+    def panel(*, result=None, error=None, arrows=None) -> Response:
+        ctx = {"request": request, "result": result, "error": error}
+        ctx.update(board_view(session, arrows=arrows))
         resp = templates.TemplateResponse(request, "_bestmove.html", ctx)
         return _with_cookie(resp, sid)
 
@@ -236,8 +278,10 @@ def best_move(request: Request) -> Response:
         return panel(error=problem)
 
     try:
-        result = engine.analyse(session.fen, depth=18, time_limit=1.0,
-                                multipv=3, timeout=5.0)
+        result = engine.analyse(
+            session.fen, depth=depth, time_limit=time_limit,
+            multipv=3, timeout=6.0,
+        )
     except engine.EngineError as exc:
         return panel(error=str(exc))
 
@@ -246,7 +290,33 @@ def best_move(request: Request) -> Response:
         mv = chess.Move.from_uci(result.best_move_uci)
         arrows = [chess.svg.Arrow(mv.from_square, mv.to_square, color="#2e7d32")]
 
-    return panel(result=result, board_svg=board_svg(session.fen, arrows=arrows))
+    return panel(result=result, arrows=arrows)
+
+
+@app.post("/play-move", response_class=HTMLResponse)
+def play_move(request: Request, move: str = Form(...)) -> Response:
+    """Apply a UCI move (e.g. the engine's suggestion) to the position."""
+    sid, session = _session_from_request(request)
+    if session.fen:
+        try:
+            board = chess.Board(session.fen)
+            mv = chess.Move.from_uci(move)
+            if mv in board.legal_moves:
+                board.push(mv)
+                session.fen = board.fen()
+                # The position changed; the old per-square confidence is stale.
+                session.per_square_confidence = None
+        except ValueError:
+            pass
+
+    context = {
+        "request": request,
+        "fen": session.fen or "",
+        "fen_error": fen_problem(session.fen),
+    }
+    context.update(board_view(session))
+    resp = templates.TemplateResponse(request, "_correct.html", context)
+    return _with_cookie(resp, sid)
 
 
 @app.get("/download-fen", response_class=PlainTextResponse)

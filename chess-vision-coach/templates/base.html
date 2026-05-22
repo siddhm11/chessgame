@@ -25,9 +25,16 @@
   <script>
     window.cvcSquare = null;
 
+    function cvcClearSelected() {
+      var sel = document.querySelectorAll('.square-btn.selected');
+      for (var i = 0; i < sel.length; i++) sel[i].classList.remove('selected');
+    }
+
     function cvcOpenPicker(evt, square) {
       evt.stopPropagation();
       window.cvcSquare = square;
+      cvcClearSelected();
+      evt.currentTarget.classList.add('selected');
       var picker = document.getElementById('piece-picker');
       if (!picker) return;
       var label = document.getElementById('picker-square');
@@ -60,11 +67,13 @@
       if (e.target.closest('#piece-picker')) return;
       if (e.target.closest('.square-btn')) return;
       picker.style.display = 'none';
+      cvcClearSelected();
     });
 
     document.body.addEventListener('htmx:afterSwap', function () {
       var picker = document.getElementById('piece-picker');
       if (picker) picker.style.display = 'none';
+      cvcClearSelected();
     });
   </script>
 </body>

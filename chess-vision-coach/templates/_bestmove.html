@@ -7,18 +7,29 @@
   <div class="eval-headline">{{ result.eval_text }} &mdash; the game is already over.</div>
   {% else %}
   <div class="eval-headline">
-    Best move: <strong>{{ result.best_move_san }}</strong>
+    <span>Best move</span>
+    <strong>{{ result.best_move_san }}</strong>
     <span class="eval-score">{{ result.eval_text }}</span>
   </div>
   <p class="muted">Evaluation is from the side-to-move's point of view
     (positive = better for them).</p>
+
+  <button class="btn btn-play" hx-post="/play-move" hx-target="#board-container"
+          hx-swap="innerHTML" hx-vals='{"move": "{{ result.best_move_uci }}"}'>
+    &#9654;&nbsp; Play {{ result.best_move_san }} on the board
+  </button>
+
   <ol class="candidates">
     {% for c in result.candidates %}
     <li>
       <span class="cand-rank">{{ loop.index }}</span>
-      <span class="cand-san">{{ c.san }}</span>
-      <span class="cand-uci">{{ c.uci }}</span>
-      <span class="cand-eval">{{ c.eval_text }}</span>
+      <div class="cand-body">
+        <div class="cand-head">
+          <span class="cand-san">{{ c.san }}</span>
+          <span class="cand-eval">{{ c.eval_text }}</span>
+        </div>
+        {% if c.line %}<div class="cand-line">{{ c.line }}</div>{% endif %}
+      </div>
     </li>
     {% endfor %}
   </ol>

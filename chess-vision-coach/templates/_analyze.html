@@ -56,10 +56,19 @@
 
     <div id="fen-status">{% include "_fen_status.html" %}</div>
 
-    <div class="actions">
+    <div class="actions engine-controls">
       <button class="btn btn-primary" hx-post="/best-move"
               hx-target="#best-move-panel" hx-swap="innerHTML"
+              hx-include="[name='level']"
               hx-indicator="#engine-spinner">Get best move</button>
+      <label class="level-field">
+        <span>Strength</span>
+        <select name="level">
+          <option value="fast">Fast</option>
+          <option value="normal" selected>Normal</option>
+          <option value="strong">Strong</option>
+        </select>
+      </label>
       <span id="engine-spinner" class="htmx-indicator">
         <span class="spinner"></span> Stockfish is thinking&hellip;
       </span>
