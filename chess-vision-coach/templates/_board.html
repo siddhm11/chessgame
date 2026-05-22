@@ -1,0 +1,13 @@
+{# Inner content of #board-container: the rendered board SVG plus a
+   transparent 8x8 grid of click-to-correct buttons. The grid is inset to
+   match python-chess's coordinate margin (15 of a 390-unit board). #}
+<div class="board">
+  {{ board_svg | safe }}
+  <div class="square-grid">
+    {% for rank in range(8, 0, -1) %}{% for file in 'abcdefgh' %}
+    <button type="button" class="square-btn" title="{{ file }}{{ rank }}"
+            data-square="{{ file }}{{ rank }}"
+            onclick="cvcOpenPicker(event, '{{ file }}{{ rank }}')"></button>
+    {% endfor %}{% endfor %}
+  </div>
+</div>

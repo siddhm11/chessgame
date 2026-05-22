@@ -1,0 +1,30 @@
+{# Response to POST /best-move: result goes into #best-move-panel, and the
+   board (now with the best-move arrow) is swapped out-of-band. #}
+{% if error %}
+<div class="banner banner-error">{{ error }}</div>
+{% elif result %}
+  {% if result.game_over %}
+  <div class="eval-headline">{{ result.eval_text }} &mdash; the game is already over.</div>
+  {% else %}
+  <div class="eval-headline">
+    Best move: <strong>{{ result.best_move_san }}</strong>
+    <span class="eval-score">{{ result.eval_text }}</span>
+  </div>
+  <p class="muted">Evaluation is from the side-to-move's point of view
+    (positive = better for them).</p>
+  <ol class="candidates">
+    {% for c in result.candidates %}
+    <li>
+      <span class="cand-rank">{{ loop.index }}</span>
+      <span class="cand-san">{{ c.san }}</span>
+      <span class="cand-uci">{{ c.uci }}</span>
+      <span class="cand-eval">{{ c.eval_text }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+{% endif %}
+
+<div id="board-container" class="board-container" hx-swap-oob="true">
+  {% include "_board.html" %}
+</div>

@@ -1,0 +1,92 @@
+<div class="analyze-layout">
+
+  <section class="col col-left">
+    <h2>Your photo</h2>
+    {% if image_url %}
+    <img class="photo" src="{{ image_url }}" alt="uploaded chessboard photo">
+    {% endif %}
+
+    <form class="reanalyze" hx-post="/analyze" hx-target="#app" hx-swap="innerHTML"
+          hx-trigger="change" hx-indicator="#reanalyze-spinner">
+      <fieldset class="radio-group">
+        <legend>Which side is closer to the camera?</legend>
+        <label><input type="radio" name="orientation" value="white"
+               {% if orientation != 'black' %}checked{% endif %}> White closer</label>
+        <label><input type="radio" name="orientation" value="black"
+               {% if orientation == 'black' %}checked{% endif %}> Black closer</label>
+      </fieldset>
+      <fieldset class="radio-group">
+        <legend>Side to move</legend>
+        <label><input type="radio" name="side_to_move" value="white"
+               {% if side_to_move != 'black' %}checked{% endif %}> White</label>
+        <label><input type="radio" name="side_to_move" value="black"
+               {% if side_to_move == 'black' %}checked{% endif %}> Black</label>
+      </fieldset>
+      <span id="reanalyze-spinner" class="htmx-indicator">
+        <span class="spinner"></span> Re-analyzing&hellip;
+      </span>
+    </form>
+
+    <h2>FEN</h2>
+    <div class="fen-row">
+      <code id="fen-text" class="fen-text">{{ fen }}</code>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn" onclick="cvcCopyFen(event)">Copy FEN</button>
+      <a class="btn" href="/download-fen">Download .fen</a>
+    </div>
+  </section>
+
+  <section class="col col-right">
+    {% if detection_failed %}
+    <div class="banner banner-warn">
+      Couldn't auto-detect the board. Please set up the position manually by
+      clicking squares.
+    </div>
+    {% else %}
+    <div class="banner banner-info">
+      Parsed at {{ '%.0f'|format(confidence * 100) }}% confidence. Click any
+      square to correct a misread piece.
+    </div>
+    {% endif %}
+
+    <div id="board-container" class="board-container">
+      {% include "_board.html" %}
+    </div>
+
+    <div id="fen-status">{% include "_fen_status.html" %}</div>
+
+    <div class="actions">
+      <button class="btn btn-primary" hx-post="/best-move"
+              hx-target="#best-move-panel" hx-swap="innerHTML"
+              hx-indicator="#engine-spinner">Get best move</button>
+      <span id="engine-spinner" class="htmx-indicator">
+        <span class="spinner"></span> Stockfish is thinking&hellip;
+      </span>
+    </div>
+
+    <div id="best-move-panel" class="best-move-panel"></div>
+  </section>
+
+</div>
+
+<div id="piece-picker" class="picker">
+  <div class="picker-title">Set <span id="picker-square"></span></div>
+  <div class="picker-grid">
+    {% for code, glyph in [('wK','&#9812;'),('wQ','&#9813;'),('wR','&#9814;'),
+                           ('wB','&#9815;'),('wN','&#9816;'),('wP','&#9817;')] %}
+    <button class="picker-btn white" hx-post="/correct" hx-target="#board-container"
+            hx-swap="innerHTML" hx-vals='js:{square: cvcSquare, piece: "{{ code }}"}'>
+      {{ glyph | safe }}</button>
+    {% endfor %}
+    {% for code, glyph in [('bK','&#9818;'),('bQ','&#9819;'),('bR','&#9820;'),
+                           ('bB','&#9821;'),('bN','&#9822;'),('bP','&#9823;')] %}
+    <button class="picker-btn black" hx-post="/correct" hx-target="#board-container"
+            hx-swap="innerHTML" hx-vals='js:{square: cvcSquare, piece: "{{ code }}"}'>
+      {{ glyph | safe }}</button>
+    {% endfor %}
+    <button class="picker-btn empty" hx-post="/correct" hx-target="#board-container"
+            hx-swap="innerHTML" hx-vals='js:{square: cvcSquare, piece: "empty"}'>
+      Empty</button>
+  </div>
+</div>

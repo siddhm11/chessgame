@@ -1,0 +1,261 @@
+/* Chess Vision Coach -- self-contained styles.
+   The brief asked for Tailwind via CDN, but this environment's network
+   policy blocks the Tailwind/HTMX CDNs, so styling is vendored here and
+   HTMX is served from /static. No build step. */
+
+:root {
+  --bg: #f4f4f5;
+  --panel: #ffffff;
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --line: #e4e4e7;
+  --accent: #2e7d32;
+  --accent-dark: #1b5e20;
+  --warn-bg: #fef3c7;
+  --warn-ink: #92400e;
+  --err-bg: #fee2e2;
+  --err-ink: #991b1b;
+  --ok-bg: #dcfce7;
+  --ok-ink: #166534;
+  --info-bg: #e0f2fe;
+  --info-ink: #075985;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+code, .fen-text, .cand-uci { font-family: "SFMono-Regular", Menlo, Consolas, monospace; }
+
+/* --- header / footer ---------------------------------------------------- */
+.site-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 24px;
+  background: var(--accent-dark);
+  color: #fff;
+  flex-wrap: wrap;
+}
+.site-title { color: #fff; text-decoration: none; font-size: 20px; font-weight: 700; }
+.site-tag { color: #c8e6c9; font-size: 13px; }
+.site-footer {
+  max-width: 1100px;
+  margin: 32px auto;
+  padding: 0 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#app { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
+
+h2 { font-size: 16px; margin: 18px 0 8px; }
+.muted { color: var(--muted); font-size: 14px; }
+
+/* --- cards / upload ----------------------------------------------------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 540px;
+  margin: 0 auto;
+}
+.field { display: block; margin: 16px 0; }
+.field-label { display: block; font-weight: 600; margin-bottom: 4px; }
+input[type="file"] {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.radio-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 14px 0;
+}
+.radio-group legend { font-weight: 600; padding: 0 6px; font-size: 14px; }
+.radio-group label { display: inline-flex; align-items: center; gap: 6px; margin-right: 18px; }
+
+/* --- buttons ------------------------------------------------------------ */
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover { background: #f3f4f6; }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent-dark); }
+
+/* --- banners ------------------------------------------------------------ */
+.banner {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin: 10px 0;
+}
+.banner-error { background: var(--err-bg); color: var(--err-ink); }
+.banner-warn  { background: var(--warn-bg); color: var(--warn-ink); }
+.banner-ok    { background: var(--ok-bg); color: var(--ok-ink); }
+.banner-info  { background: var(--info-bg); color: var(--info-ink); }
+
+/* --- analyze layout ----------------------------------------------------- */
+.analyze-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  align-items: start;
+}
+.col {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+}
+@media (max-width: 820px) {
+  .analyze-layout { grid-template-columns: 1fr; }
+}
+
+.photo {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.fen-row { margin: 6px 0; }
+.fen-text {
+  display: block;
+  background: #f3f4f6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+/* --- board + click overlay --------------------------------------------- */
+.board-container { margin: 8px 0 4px; }
+.board {
+  position: relative;
+  width: 480px;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.board svg { display: block; width: 100%; height: auto; }
+
+.square-grid {
+  position: absolute;
+  /* python-chess insets the 8x8 area by 15 of a 390-unit board = 3.846%. */
+  top: 3.846%;
+  left: 3.846%;
+  width: 92.308%;
+  height: 92.308%;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+.square-btn { background: transparent; border: 0; padding: 0; cursor: pointer; }
+.square-btn:hover { background: rgba(46, 125, 50, 0.30); }
+
+/* --- piece picker popover ---------------------------------------------- */
+.picker {
+  display: none;
+  position: absolute;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 10px;
+}
+.picker-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.picker-grid { display: grid; grid-template-columns: repeat(6, 40px); gap: 4px; }
+.picker-btn {
+  height: 40px;
+  font-size: 24px;
+  line-height: 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f9fafb;
+  cursor: pointer;
+}
+.picker-btn:hover { background: #e5e7eb; }
+.picker-btn.white { color: #fff; text-shadow: 0 0 1px #000, 0 0 2px #000; }
+.picker-btn.black { color: #000; }
+.picker-btn.empty {
+  grid-column: span 6;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* --- best move panel ---------------------------------------------------- */
+.best-move-panel:empty { display: none; }
+.eval-headline { font-size: 16px; margin: 8px 0; }
+.eval-score {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 14px;
+  margin-left: 6px;
+}
+.candidates { list-style: none; padding: 0; margin: 10px 0 0; }
+.candidates li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.cand-rank {
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-dark); color: #fff;
+  border-radius: 50%; font-size: 12px; font-weight: 700;
+}
+.cand-san { font-weight: 700; min-width: 64px; }
+.cand-uci { color: var(--muted); font-size: 13px; }
+.cand-eval { margin-left: auto; font-weight: 600; }
+
+/* --- htmx loading indicators ------------------------------------------- */
+.htmx-indicator { display: none; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { display: inline-flex; }
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: cvc-spin 0.7s linear infinite;
+}
+@keyframes cvc-spin { to { transform: rotate(360deg); } }

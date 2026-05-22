@@ -1,0 +1,10 @@
+{# Response to POST /correct: the refreshed board goes into #board-container,
+   plus out-of-band updates for the FEN text, the legality banner, and a reset
+   of the (now stale) best-move panel. #}
+{% include "_board.html" %}
+
+<code id="fen-text" class="fen-text" hx-swap-oob="true">{{ fen }}</code>
+
+<div id="fen-status" hx-swap-oob="true">{% include "_fen_status.html" %}</div>
+
+<div id="best-move-panel" class="best-move-panel" hx-swap-oob="true"></div>

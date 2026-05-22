@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chess Vision Coach</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-title" href="/">&#9818; Chess Vision Coach</a>
+    <span class="site-tag">photo &rarr; FEN &rarr; best move</span>
+  </header>
+
+  <main id="app">
+    {% block app %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    Upload a top-down chessboard photo. Vision quality depends on angle and
+    lighting &mdash; correct any misreads by clicking squares.
+  </footer>
+
+  <script>
+    window.cvcSquare = null;
+
+    function cvcOpenPicker(evt, square) {
+      evt.stopPropagation();
+      window.cvcSquare = square;
+      var picker = document.getElementById('piece-picker');
+      if (!picker) return;
+      var label = document.getElementById('picker-square');
+      if (label) label.textContent = square;
+      picker.style.display = 'block';
+      var rect = evt.currentTarget.getBoundingClientRect();
+      var left = window.scrollX + rect.left;
+      var maxLeft = window.scrollX + document.documentElement.clientWidth
+                    - picker.offsetWidth - 8;
+      if (left > maxLeft) left = maxLeft;
+      if (left < 8) left = 8;
+      picker.style.top = (window.scrollY + rect.bottom + 6) + 'px';
+      picker.style.left = left + 'px';
+    }
+
+    function cvcCopyFen(evt) {
+      var el = document.getElementById('fen-text');
+      if (!el) return;
+      var text = el.textContent.trim();
+      if (navigator.clipboard) navigator.clipboard.writeText(text);
+      var btn = evt.target;
+      var old = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function () { btn.textContent = old; }, 1200);
+    }
+
+    document.addEventListener('click', function (e) {
+      var picker = document.getElementById('piece-picker');
+      if (!picker || picker.style.display !== 'block') return;
+      if (e.target.closest('#piece-picker')) return;
+      if (e.target.closest('.square-btn')) return;
+      picker.style.display = 'none';
+    });
+
+    document.body.addEventListener('htmx:afterSwap', function () {
+      var picker = document.getElementById('piece-picker');
+      if (picker) picker.style.display = 'none';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+<div class="upload-view">
+  {% if error %}
+  <div class="banner banner-error">{{ error }}</div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Upload a chessboard photo</h2>
+    <p class="muted">
+      Shoot straight down over the board for the most reliable read. You can
+      fix any misclassified pieces on the next screen.
+    </p>
+
+    <form hx-post="/analyze" hx-target="#app" hx-swap="innerHTML"
+          hx-encoding="multipart/form-data" hx-indicator="#upload-spinner">
+
+      <label class="field">
+        <span class="field-label">Chessboard photo</span>
+        <input type="file" name="image" accept="image/*" required>
+      </label>
+
+      <fieldset class="radio-group">
+        <legend>Which side is closer to the camera?</legend>
+        <label><input type="radio" name="orientation" value="white" checked> White closer</label>
+        <label><input type="radio" name="orientation" value="black"> Black closer</label>
+      </fieldset>
+
+      <fieldset class="radio-group">
+        <legend>Side to move</legend>
+        <label><input type="radio" name="side_to_move" value="white" checked> White</label>
+        <label><input type="radio" name="side_to_move" value="black"> Black</label>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Analyze position</button>
+        <span id="upload-spinner" class="htmx-indicator">
+          <span class="spinner"></span> Analyzing photo&hellip;
+        </span>
+      </div>
+    </form>
+  </div>
+</div>

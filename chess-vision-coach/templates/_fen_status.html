@@ -1,0 +1,5 @@
+{% if fen_error %}
+<div class="banner banner-warn">&#9888; {{ fen_error }} Fix it before getting the best move.</div>
+{% else %}
+<div class="banner banner-ok">&#10003; Position is legal &mdash; ready for analysis.</div>
+{% endif %}
