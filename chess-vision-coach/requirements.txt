@@ -1,0 +1,17 @@
+# chess-vision-coach -- pinned, verified to install on Python 3.11 / Linux x86_64.
+# Phase 1: CLI vision pipeline.
+chess==1.11.2
+opencv-python-headless==4.13.0.92
+numpy==2.4.6
+pillow==12.2.0
+CairoSVG==2.9.0
+
+# Phase 2: web app + engine.
+fastapi==0.136.1
+uvicorn==0.47.0
+jinja2==3.1.6
+python-multipart==0.0.29
+httpx==0.28.1
+
+# Tests.
+pytest==9.0.3
