@@ -7,4 +7,6 @@ uploads/
 bin/stockfish
 .pytest_cache/
 output.png
+out_*.png
+test_photos/
 *.egg-info/
