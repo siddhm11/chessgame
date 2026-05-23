@@ -30,6 +30,7 @@ and perspective correction are general-purpose; piece-type matching is not.
 from __future__ import annotations
 
 import dataclasses
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
@@ -330,7 +331,38 @@ class ClassicalBackend:
 # Top-level entry point
 # --------------------------------------------------------------------------
 
-_DEFAULT_BACKEND = ClassicalBackend()
+_DEFAULT_BACKEND: "VisionBackend | None" = None
+
+
+def _make_default_backend() -> "VisionBackend":
+    """Pick a backend based on the CVC_BACKEND env var.
+
+    "classical" (default) -> ClassicalBackend (template matching).
+    "model"               -> ModelBackend (YOLO11n ONNX). Requires the
+                             onnxruntime package and a vendored .onnx file.
+    """
+    name = os.environ.get("CVC_BACKEND", "classical").lower()
+    if name == "model":
+        from chess_vision.model_backend import ModelBackend
+        return ModelBackend()
+    return ClassicalBackend()
+
+
+def _get_default_backend() -> "VisionBackend":
+    global _DEFAULT_BACKEND
+    if _DEFAULT_BACKEND is None:
+        _DEFAULT_BACKEND = _make_default_backend()
+    return _DEFAULT_BACKEND
+
+
+def find_board(img_bgr: np.ndarray) -> np.ndarray:
+    """Geometrically locate the chessboard in `img_bgr` and warp it to
+    BOARD_PX x BOARD_PX. Shared by all backends -- board detection is
+    classical CV, only piece classification differs across backends."""
+    # ClassicalBackend's _find_board uses no piece-classification state, so
+    # instantiating one here is cheap (templates are built lazily).
+    finder = ClassicalBackend()
+    return finder._find_board(img_bgr)
 
 
 def _grid_to_placement(grid: list[list[str]]) -> str:
@@ -397,7 +429,7 @@ def analyze_image(
     image, no board, or low overall confidence -- this returns
     `fallback_result()` (starting position, detection_failed=True).
     """
-    backend = backend or _DEFAULT_BACKEND
+    backend = backend or _get_default_backend()
     try:
         img = _load_bgr(source)
         if min(img.shape[:2]) < 64:

@@ -84,6 +84,27 @@ python -m chess_vision.cli photo.jpg --orientation white --side-to-move white
 Outputs the parsed FEN, a per-square confidence grid, and a side-by-side
 visualization (`output.png`: original photo | rendered board).
 
+### Vision backend — classical (default) or YOLO11n model
+
+Two interchangeable backends live behind the `VisionBackend` Protocol in
+`chess_vision/vision.py`:
+
+| Backend | What it does | When it shines |
+|---|---|---|
+| `classical` (default) | Template-match each warped square against python-chess's own piece glyphs | Synthetic boards, lichess/chess.com diagrams (parses at ~100%) |
+| `model` | Ultralytics **YOLO11n** ONNX detector trained on real chess photos | Real-world boards, occluded pieces, varied piece sets |
+
+Switch backends by setting `CVC_BACKEND=model` before launching the app or
+the CLI. The ONNX file is vendored at
+`chess_vision/models/yolo11n-chess.onnx` (~10 MB) and is loaded lazily —
+no cost unless you actually use it. `onnxruntime` is included in
+`requirements.txt`.
+
+> **License note:** the model weights are AGPL-3.0 (Ultralytics YOLO11
+> framework license, regardless of the dataset). Fine for personal /
+> learning use. For commercial use you'd need an Ultralytics commercial
+> license or a non-YOLO model.
+
 ---
 
 ## How the pipeline works
