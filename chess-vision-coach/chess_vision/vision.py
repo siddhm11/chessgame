@@ -217,6 +217,10 @@ class ClassicalBackend:
         return float(max((is_light == pattern).mean(), (is_light != pattern).mean()))
 
     def _largest_quad(self, img_bgr: np.ndarray) -> np.ndarray | None:
+        """Find a 4-corner contour likely to be the board. Iterates the
+        approxPolyDP epsilon (real-world contours rarely fit at exactly 0.02)
+        and falls back to minAreaRect of the largest big-enough contour --
+        a rotated rectangle is fine, the warp will square it up."""
         h, w = img_bgr.shape[:2]
         img_area = float(h * w)
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -226,19 +230,35 @@ class ClassicalBackend:
         contours, _ = cv2.findContours(
             edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
+
+        big = [c for c in contours if cv2.contourArea(c) >= 0.15 * img_area]
+
+        # Strategy 1: largest contour that approximates to exactly 4 corners.
+        # Try multiple epsilons; real-world board contours rarely fit 0.02.
         best: np.ndarray | None = None
         best_area = 0.0
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < 0.20 * img_area:
-                continue
+        for c in big:
             peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4 and cv2.isContourConvex(approx):
-                _, _, bw, bh = cv2.boundingRect(approx)
-                if 0.6 < bw / float(bh) < 1.7 and area > best_area:
-                    best, best_area = approx, area
-        return best
+            area = cv2.contourArea(c)
+            for eps in (0.005, 0.01, 0.02, 0.03, 0.04, 0.06):
+                approx = cv2.approxPolyDP(c, eps * peri, True)
+                if len(approx) == 4 and cv2.isContourConvex(approx):
+                    _, _, bw, bh = cv2.boundingRect(approx)
+                    if 0.55 < bw / float(bh) < 1.8 and area > best_area:
+                        best, best_area = approx, area
+                    break
+        if best is not None:
+            return best
+
+        # Strategy 2: minAreaRect on the largest contour -- a rotated rect.
+        if big:
+            biggest = max(big, key=cv2.contourArea)
+            rect = cv2.minAreaRect(biggest)
+            (_, _), (rw, rh), _ = rect
+            if rw > 0 and rh > 0 and 0.55 < (rw / rh) < 1.8:
+                box = cv2.boxPoints(rect).astype("float32")
+                return box.reshape(4, 1, 2)
+        return None
 
     def _warp_quad(self, img_bgr: np.ndarray, quad: np.ndarray) -> np.ndarray:
         src = self._order_points(quad)
@@ -249,26 +269,59 @@ class ClassicalBackend:
         m = cv2.getPerspectiveTransform(src, dst)
         return cv2.warpPerspective(img_bgr, m, (BOARD_PX, BOARD_PX))
 
+    def _scan_for_board(self, img_bgr: np.ndarray) -> tuple[np.ndarray | None, float]:
+        """Sliding-square search for the board. Useful on top-down photos
+        where the board doesn't fill the frame and `_largest_quad`'s 4-corner
+        contour approximation fails (real-world clutter, watermarks, edge
+        labels). Tries square crops at several scales/positions and returns
+        the one with the highest checkerboard score."""
+        h, w = img_bgr.shape[:2]
+        min_dim = min(h, w)
+        best_score = 0.0
+        best_crop: np.ndarray | None = None
+        for side_frac in (0.95, 0.85, 0.75, 0.65, 0.55):
+            side = int(min_dim * side_frac)
+            if side < 200:
+                continue
+            step = max(20, side // 12)
+            for y in range(0, max(1, h - side + 1), step):
+                for x in range(0, max(1, w - side + 1), step):
+                    crop = img_bgr[y : y + side, x : x + side]
+                    resized = cv2.resize(crop, (BOARD_PX, BOARD_PX))
+                    score = self._checkerboard_score(resized)
+                    if score > best_score:
+                        best_score, best_crop = score, resized
+        return best_crop, best_score
+
     def _find_board(self, img_bgr: np.ndarray) -> np.ndarray:
         """Return the board cropped/warped to BOARD_PX x BOARD_PX.
 
-        The whole frame is always considered as a candidate (the clean
-        top-down path used by the synthetic fixtures and flat overhead
-        photos). A perspective-corrected quad is also tried (the real-photo
-        path). Whichever scores higher on the checkerboard test wins, so a
-        spurious quad can never override an already-clean board.
+        Three candidate strategies, scored on checkerboard cleanness:
+          (a) whole frame resized -- works on synthetic fixtures.
+          (b) largest 4-corner quad warp -- works on board-fills-frame photos.
+          (c) sliding-square scan -- works on top-down photos where the board
+              is a sub-rectangle in white/textured background (real-world
+              stock photos, phone shots with margin).
+        Highest checkerboard score wins.
         """
         whole = cv2.resize(img_bgr, (BOARD_PX, BOARD_PX))
-        whole_score = self._checkerboard_score(whole)
-        if whole_score >= 0.97:
-            return whole
+        best_score = self._checkerboard_score(whole)
+        best = whole
+        if best_score >= 0.97:
+            return best
 
         quad = self._largest_quad(img_bgr)
         if quad is not None:
             warped = self._warp_quad(img_bgr, quad)
-            if self._checkerboard_score(warped) > whole_score:
-                return warped
-        return whole
+            s = self._checkerboard_score(warped)
+            if s > best_score:
+                best_score, best = s, warped
+
+        scan_crop, scan_score = self._scan_for_board(img_bgr)
+        if scan_crop is not None and scan_score > best_score:
+            best_score, best = scan_score, scan_crop
+
+        return best
 
     # -- per-square classification -----------------------------------------
 
