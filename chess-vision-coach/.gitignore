@@ -10,3 +10,5 @@ output.png
 out_*.png
 test_photos/
 *.egg-info/
+finetune_data/
+debug_out/
