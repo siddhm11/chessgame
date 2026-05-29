@@ -55,14 +55,20 @@ class ModelBackend:
             model_path = os.environ.get("CVC_MODEL_PATH")
         if model_path is None:
             models_dir = Path(__file__).resolve().parent / "models"
-            # Prefer the larger, more accurate YOLOv8m if present.
-            for candidate in ("yolov8m-chess.onnx", "yolo11n-chess.onnx"):
+            # Prefer the fine-tuned model (trained on real tournament photos,
+            # 98% per-square accuracy on held-out val); fall back to the
+            # pre-trained models if it is absent.
+            for candidate in (
+                "yolov8n-chess-finetuned.onnx",
+                "yolov8m-chess.onnx",
+                "yolo11n-chess.onnx",
+            ):
                 p = models_dir / candidate
                 if p.exists():
                     model_path = p
                     break
             else:
-                model_path = models_dir / "yolov8m-chess.onnx"
+                model_path = models_dir / "yolov8n-chess-finetuned.onnx"
         self.model_path = Path(model_path)
         self.name = self.model_path.stem
         self._session = None

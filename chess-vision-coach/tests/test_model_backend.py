@@ -35,8 +35,12 @@ pytestmark = pytest.mark.skipif(
 
 
 def _backend():
+    # Pin to yolo11n explicitly: this suite verifies ONNX-backend mechanics
+    # on the synthetic fixtures, and yolo11n parses rendered diagrams. The
+    # default model is now yolov8n-chess-finetuned, which is specialized for
+    # REAL tournament photos and does not recognize flat SVG-rendered pieces.
     from chess_vision.model_backend import ModelBackend
-    return ModelBackend()
+    return ModelBackend(model_path=MODEL_PATH)
 
 
 def test_model_backend_loads_and_returns_grid_shape():
@@ -65,6 +69,9 @@ def test_model_backend_via_analyze_image_env(monkeypatch):
     """End-to-end: setting CVC_BACKEND=model routes analyze_image through
     the ONNX backend and produces a valid (non-fallback) result."""
     monkeypatch.setenv("CVC_BACKEND", "model")
+    # Route to yolo11n (parses synthetic renders); the finetuned default is
+    # for real photos only. See _backend() above.
+    monkeypatch.setenv("CVC_MODEL_PATH", str(MODEL_PATH))
     monkeypatch.setattr(vision, "_DEFAULT_BACKEND", None)
 
     result = vision.analyze_image(
