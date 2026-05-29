@@ -12,3 +12,5 @@ test_photos/
 *.egg-info/
 finetune_data/
 debug_out/
+runs/
+*.pt
