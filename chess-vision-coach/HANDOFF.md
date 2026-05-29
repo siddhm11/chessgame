@@ -2,9 +2,12 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** `0bcbb71` — upgrade to YOLOv8m chess model + auto-configuring backend  
+**Last commit:** fine-tuned YOLOv8n default + benchmark/test integration  
 **Tests:** 48 passing  
-**Status:** fully functional; model accuracy is the main open question
+**Status:** fully functional. Vision accuracy SOLVED for real photos via
+fine-tuning — 98.3% per-square on held-out photos (was 18.9% recall).
+Default backend is now the fine-tuned model. Remaining weak spot: sparse
+endgames (see Benchmark results / What to work on next).
 
 ---
 
@@ -125,10 +128,19 @@ _EMPTY_CONF     = 0.90   # confidence assigned to empty cells (no real "is empty
 
 | file | size | architecture | input | classes | source |
 |---|---|---|---|---|---|
+| `yolov8n-chess-finetuned.onnx` | 12 MB | YOLOv8n | 416×416 | 13 (board + 12 pieces) | **fine-tuned in-repo** on samryan18 photos (AGPL-3.0) |
 | `yolov8m-chess.onnx` | 99 MB | YOLOv8m | 640×640 | 13 (board + 12 pieces) | NAKSTStudio/yolov8m-chess-piece-detection (AGPL-3.0) |
 | `yolo11n-chess.onnx` | 11 MB | YOLO11n | 416×416 | 12 pieces | same repo, mobile export (AGPL-3.0) |
 
-**Both are AGPL-3.0.** Fine for personal/learning use; a commercial deployment would need an Ultralytics commercial license or a different model.
+**`yolov8n-chess-finetuned.onnx` is the default** (auto-selected by `ModelBackend`,
+and `run.sh` sets `CVC_BACKEND=model`). It was produced by `finetune_train.py`
+from `prepare_finetune_dataset.py` output — see "Fine-tuning" below. It is
+specialized for REAL photos; for rendered/synthetic diagrams use
+`CVC_BACKEND=classical`.
+
+**All AGPL-3.0** (the fine-tune inherits Ultralytics' license). Fine for
+personal/learning use; a commercial deployment would need an Ultralytics
+commercial license or a different base model.
 
 ---
 
@@ -142,7 +154,24 @@ The dataset (`/tmp/chess-dataset/labeled_originals`) auto-clones on first run (~
 |---|---|---|---|---|---|
 | classical | 22.3% | 39.1% | 94.4% | 16.4% | 1.36 |
 | yolo11n-chess | 78.6% | 79.0% | 2.4% | 21.2% | 1.23 |
-| **yolov8m-chess** | **79.5%** | **82.6%** | **18.9%** | **21.6%** | 1.49 |
+| yolov8m-chess | 79.5% | 82.6% | 18.9% | 21.6% | 1.49 |
+
+### After fine-tuning (68 HELD-OUT photos, never seen in training)
+
+Run with: `python bench/benchmark.py --source /tmp/chess-val-originals --n 68`
+(build that dir from the val-split stems — see "Fine-tuning").
+
+| backend | exact | empty | recall | type\|p | sec/img |
+|---|---|---|---|---|---|
+| classical | 23.6% | 45.8% | 94.9% | 22.1% | 1.43 |
+| yolo11n-chess | 70.1% | 70.6% | 2.4% | 22.6% | 1.31 |
+| yolov8m-chess | 70.9% | 73.9% | 13.3% | 25.9% | 1.68 |
+| **yolov8n-chess-finetuned** | **98.3%** | **99.3%** | **98.7%** | **96.4%** | **1.33** |
+
+Per-board: 26/68 perfect (all 64 squares), 66/68 within 4 squares, 2/68 bad.
+The 2 bad boards are **sparse endgames** (6–7 pieces) where board detection
+misaligns the warp on the near-empty board. Dense midgames are near-perfect.
+The click-to-correct UI handles the residual 1–4 squares on the "near" boards.
 
 **Metric definitions:**
 
@@ -275,8 +304,12 @@ chess-vision-coach/
     render.py           FEN → SVG/PNG, side-by-side viz, board_svg(fill=…)
     cli.py              python -m chess_vision.cli
     models/
-      yolov8m-chess.onnx   99 MB — current default for CVC_BACKEND=model
-      yolo11n-chess.onnx   11 MB — fallback if yolov8m absent
+      yolov8n-chess-finetuned.onnx  12 MB — DEFAULT (fine-tuned, real photos)
+      yolov8m-chess.onnx   99 MB — pre-trained fallback
+      yolo11n-chess.onnx   11 MB — pre-trained fallback
+  prepare_finetune_dataset.py  dataset prep (photos -> YOLO format)
+  finetune_train.py            CPU fine-tuning runner -> ONNX
+  finetune_colab.ipynb         GPU (yolov8m @ 640) fine-tuning notebook
   app/
     main.py             FastAPI routes, confidence_fill(), ENGINE_LEVELS
     engine.py           Stockfish UCI (BestMoveResult, Candidate, PV lines)
@@ -310,19 +343,64 @@ chess-vision-coach/
 
 ---
 
+## Fine-tuning (how the default model was made)
+
+The 18.9% recall of the pre-trained models was a domain gap, not a tuning
+problem (lowering `_CONF_THRESHOLD` to 0.15 and CLAHE preprocessing both
+failed to help — verified). The fix was to fine-tune on real photos:
+
+```bash
+# 1. Build YOLO training data from the labeled dataset (no GPU; ~3 min).
+#    Crops/warps each board, derives per-cell boxes from the filename FEN,
+#    filters low-quality crops, writes 388 train / 68 val to finetune_data/.
+python prepare_finetune_dataset.py
+
+# 2a. Train on CPU (~14 min, yolov8n @ 416, 20 epochs) — what produced the
+#     current default model:
+python finetune_train.py
+#     -> exports chess_vision/models/yolov8n-chess-finetuned.onnx
+
+# 2b. OR train on GPU for higher ceiling (yolov8m @ 640, 50 epochs):
+#     open finetune_colab.ipynb in Google Colab (T4).
+
+# 3. Benchmark on the HELD-OUT val originals (leak-free):
+mkdir -p /tmp/chess-val-originals
+for f in finetune_data/images/val/*.jpg; do
+  cp "/tmp/chess-dataset/labeled_originals/$(basename "$f" .jpg).JPG" /tmp/chess-val-originals/
+done
+python bench/benchmark.py --source /tmp/chess-val-originals --n 68
+```
+
+Result: per-square 98.3%, recall 98.7%, type|p 96.4% (see Benchmark results).
+
 ## What to work on next
 
 **Highest-value items in order:**
 
-1. **Lower `_CONF_THRESHOLD` and re-benchmark.** The current 0.25 threshold might be too conservative for real tournament photos. Try 0.15 and check if recall improves without too many false positives. Edit `model_backend.py:45`.
+1. **Improve sparse-endgame accuracy.** The 2 worst held-out boards are
+   near-empty endgames where `_find_board` misaligns the warp (few pieces =
+   weak checkerboard signal, and the model trained mostly on dense boards).
+   Try: (a) add sparse positions to training, (b) make board detection more
+   robust on near-empty boards, (c) detect+reject misaligned warps.
 
-2. **Investigate board alignment.** Save the warped board crop for a few photos and compare it to the original. If pieces are being cropped to the edge or the grid is slightly misaligned, a small pad or crop adjustment would fix recall and type accuracy simultaneously.
+2. **Train the yolov8m @ 640 variant on GPU** (`finetune_colab.ipynb`) for a
+   higher accuracy ceiling than the CPU-trained nano, if the nano's
+   sparse-endgame weakness matters for the use case.
 
-3. **Wire `CVC_BACKEND=model` as default in `run.sh`.** The yolov8m model is already in the repo. The only reason classical is still default is the historical "no model file" concern — that no longer applies. Edit `run.sh` to set `CVC_BACKEND=model` before `uvicorn`.
+3. **Real-photo test suite.** Add `tests/fixtures/real/` with 2–3 representative
+   real photos and `tests/test_vision_real.py` that runs the finetuned backend
+   and asserts the structural contract (valid `VisionResult`, FEN parses,
+   confidence in [0,1], no crash) — plus a king-detection floor on a dense
+   board. Real photos exist at `/tmp/chess-val-originals` to copy from.
 
-4. **Real-photo test suite.** Add `tests/fixtures/real/` with 2–3 representative real photos (e.g. the iStock photos the user supplied) and `tests/test_vision_real.py` that asserts the structural contract only (valid `VisionResult`, FEN parses, confidence in [0,1], no crash). Does not assert piece accuracy; just ensures the pipeline doesn't blow up on real input.
+4. **Persistent sessions (optional).** Replace the in-memory `SessionStore` with
+   Redis for multi-user deployment. The `Session` dataclass is clean; the swap
+   is contained to `app/session.py`.
 
-5. **Persistent sessions (optional).** Replace the in-memory `SessionStore` with Redis for multi-user deployment. The `Session` dataclass is clean; the swap is contained to `app/session.py`.
+**Done this session:** fine-tuned model (item: "model fine-tuned on
+samryan18-style photos"), board-alignment investigation (it's the sparse-board
+weak spot), `CVC_BACKEND=model` default wired in `run.sh`. The conf-threshold
+experiment was run and reverted (it hurt type accuracy).
 
 ---
 
