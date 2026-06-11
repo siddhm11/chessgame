@@ -378,5 +378,5 @@ class ModelBackend:
         Impossible cells (back-rank pawns, duplicate kings, …) are repaired
         from the model's runner-up classes or confidence-flagged for the UI.
         """
-        grid, conf, _notes = sanitize(grid, conf, alts)
-        return BackendOutput(grid=grid, conf=conf, board_found=True)
+        grid, conf, notes = sanitize(grid, conf, alts)
+        return BackendOutput(grid=grid, conf=conf, board_found=True, notes=notes)

@@ -172,6 +172,7 @@ def _analyze_context(request: Request, session) -> dict:
         "detection_failed": session.detection_failed,
         "confidence": session.confidence,
         "fen_error": fen_problem(session.fen),
+        "vision_notes": session.vision_notes or [],
     }
     ctx.update(board_view(session))
     return ctx
@@ -239,6 +240,7 @@ async def analyze(
     session.detection_failed = result.detection_failed
     session.confidence = result.confidence
     session.per_square_confidence = result.per_square_confidence
+    session.vision_notes = result.notes or None
 
     resp = templates.TemplateResponse(
         request, "_analyze.html", _analyze_context(request, session)
@@ -332,8 +334,10 @@ def play_move(request: Request, move: str = Form(...)) -> Response:
             if mv in board.legal_moves:
                 board.push(mv)
                 session.fen = board.fen()
-                # The position changed; the old per-square confidence is stale.
+                # The position changed; the old per-square confidence and
+                # vision repair notes are stale.
                 session.per_square_confidence = None
+                session.vision_notes = None
         except ValueError:
             pass
 

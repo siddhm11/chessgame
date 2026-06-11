@@ -32,6 +32,8 @@ class Session:
     # Per-square confidence from the vision pass, used to tint shaky squares.
     # Set to None once the position is changed by playing a move.
     per_square_confidence: dict | None = None
+    # Auto-repair notes from the vision sanity layer ("e8: ... reread Q as K").
+    vision_notes: list | None = None
 
 
 class SessionStore:

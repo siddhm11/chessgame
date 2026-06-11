@@ -50,6 +50,17 @@
     </div>
     {% endif %}
 
+    {% if vision_notes %}
+    <div class="banner banner-notes">
+      <strong>Auto-checked while parsing:</strong>
+      <ul class="vision-notes">
+        {% for note in vision_notes %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
     <div id="board-container" class="board-container">
       {% include "_board.html" %}
     </div>

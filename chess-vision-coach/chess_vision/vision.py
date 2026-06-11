@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
@@ -65,6 +66,10 @@ class VisionResult:
     confidence: float
     detection_failed: bool
     per_square_confidence: Optional[dict[str, float]] = None
+    # Human-readable record of auto-repairs made by the sanity layer
+    # (e.g. "e8: no K found anywhere; reread Q as K"). Square names match
+    # the returned FEN's orientation.
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +81,9 @@ class BackendOutput:
     # 8x8 grid of per-square confidences in [0, 1], same indexing as `grid`.
     conf: list[list[float]]
     board_found: bool = True
+    # Auto-repair notes from the backend's sanity layer, square-prefixed
+    # ("e8: ..."), in the backend's (pre-orientation) frame.
+    notes: list[str] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -469,6 +477,23 @@ def _full_starting_fen(side_to_move: str) -> str:
     return f"{STARTING_PLACEMENT} {stm} - - 0 1"
 
 
+_NOTE_SQUARE_RE = re.compile(r"^([a-h])([1-8])(?=:)")
+
+
+def _rotate_note_square(note: str) -> str:
+    """Remap the leading square name of a sanity note by 180°.
+
+    Backend notes are written in the backend's frame; when the caller asked
+    for black orientation the grid is rotated, so e8 becomes d1, etc.
+    """
+    def sub(m: "re.Match[str]") -> str:
+        file_idx = FILES.index(m.group(1))
+        rank = int(m.group(2))
+        return f"{FILES[7 - file_idx]}{9 - rank}"
+
+    return _NOTE_SQUARE_RE.sub(sub, note)
+
+
 def analyze_image(
     source,
     *,
@@ -494,9 +519,11 @@ def analyze_image(
 
         grid = out.grid
         conf = out.conf
+        notes = list(out.notes)
         if orientation == "black":
             grid = rotate_grid_180(grid)
             conf = rotate_grid_180(conf)
+            notes = [_rotate_note_square(n) for n in notes]
 
         scores = [v for row in conf for v in row]
         overall = float(sum(scores) / len(scores)) if scores else 0.0
@@ -518,6 +545,7 @@ def analyze_image(
             confidence=round(overall, 4),
             detection_failed=False,
             per_square_confidence=per_square,
+            notes=notes,
         )
     except Exception:
         return fallback_result(side_to_move)
