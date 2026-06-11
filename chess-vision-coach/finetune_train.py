@@ -9,6 +9,8 @@ RAM caching, early stopping. Override via env vars if you have a GPU.
   CVC_FT_IMGSZ   training image size (default 416)
   CVC_FT_EPOCHS  max epochs          (default 20)
   CVC_FT_BATCH   batch size          (default 16)
+  CVC_FT_EXPORT  exported .onnx name (default yolov8n-chess-finetuned.onnx)
+  CVC_FT_RUN     run directory name  (default yolo_chess_cpu)
 
 Outputs:
   runs/detect/chess_finetune/<name>/weights/best.pt   best checkpoint
@@ -29,9 +31,9 @@ IMGSZ  = int(os.environ.get("CVC_FT_IMGSZ", "416"))
 EPOCHS = int(os.environ.get("CVC_FT_EPOCHS", "20"))
 BATCH  = int(os.environ.get("CVC_FT_BATCH", "16"))
 DATA   = HERE / "finetune_data" / "dataset.yaml"
-RUN    = "yolo_chess_cpu"
+RUN    = os.environ.get("CVC_FT_RUN", "yolo_chess_cpu")
 
-EXPORT_NAME = "yolov8n-chess-finetuned.onnx"
+EXPORT_NAME = os.environ.get("CVC_FT_EXPORT", "yolov8n-chess-finetuned.onnx")
 
 
 def main() -> None:

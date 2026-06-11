@@ -28,6 +28,14 @@ Sparse-position recovery:
   re-decode the same raw predictions at a lower threshold. This avoids a
   second ONNX inference while recovering genuine low-confidence detections
   in near-empty endgame positions.
+
+Test-time augmentation (CVC_TTA=1, default on):
+  The board is inferred twice — as-is and mirrored left-right (the model
+  is trained with fliplr augmentation, so the mirrored view is
+  in-distribution). Where the two views agree, confidence is reinforced;
+  where they disagree, the cell's confidence is capped below the amber
+  tint threshold so a confidently-wrong single-view read can no longer
+  sit on the board looking trustworthy.
 """
 
 from __future__ import annotations
@@ -61,6 +69,20 @@ _CONF_THRESHOLD = 0.25
 _SPARSE_THRESHOLD = 0.12   # used only when < 2 pieces survive the normal threshold
 _NMS_THRESHOLD = 0.45
 _EMPTY_CONF = 0.90
+
+# Test-time augmentation (second inference on the mirrored board).
+_TTA_ENABLED = os.environ.get("CVC_TTA", "1") != "0"
+# Confidence cap when the two TTA views disagree on the piece type —
+# kept below the app's amber threshold (0.80) so disagreements always tint.
+_TTA_DISAGREE_CONF = 0.70
+# Confidence multiplier when one view sees a piece the other view missed.
+_TTA_OCCUPANCY_DAMP = 0.85
+# Minimum mirror-view confidence required to fill a cell the primary view
+# called empty.
+_TTA_FILL_CONF = 0.60
+# Primary-view confidence above which agreement may reinforce the score
+# (matches the app's amber tint threshold in app/main.py).
+_TTA_TRUST_CONF = 0.80
 
 # Pixel border width used when sampling cell corner brightness.
 _CORNER_PX = 8
@@ -242,7 +264,7 @@ class ModelBackend:
 
         return grid, conf, alts
 
-    def _infer_board(
+    def _infer_single(
         self, board_bgr: np.ndarray
     ) -> tuple[list[list[str]], list[list[float]], list]:
         """Run ONNX inference on a pre-cropped board image.
@@ -265,6 +287,58 @@ class ModelBackend:
         piece_count = sum(1 for row in grid for sq in row if sq != ".")
         if piece_count < 2:
             grid, conf, alts = self._decode_predictions(preds, _SPARSE_THRESHOLD)
+
+        return grid, conf, alts
+
+    def _infer_board(
+        self, board_bgr: np.ndarray
+    ) -> tuple[list[list[str]], list[list[float]], list]:
+        """Inference with optional test-time augmentation (mirrored view)."""
+        grid, conf, alts = self._infer_single(board_bgr)
+        if not _TTA_ENABLED:
+            return grid, conf, alts
+
+        m_grid, m_conf, m_alts = self._infer_single(cv2.flip(board_bgr, 1))
+        # Un-mirror the second view so both index the same squares.
+        m_grid = [row[::-1] for row in m_grid]
+        m_conf = [row[::-1] for row in m_conf]
+        m_alts = [row[::-1] for row in m_alts]
+
+        for r in range(8):
+            for c in range(8):
+                s1, c1 = grid[r][c], conf[r][c]
+                s2, c2 = m_grid[r][c], m_conf[r][c]
+                if s1 == s2:
+                    # Two views agree — reinforce, but never promote a cell
+                    # across the amber threshold: agreement on a *wrong*
+                    # read must not turn a flagged square into a trusted one.
+                    if s1 != "." and c1 >= _TTA_TRUST_CONF:
+                        conf[r][c] = max(c1, c2)
+                    continue
+                if s1 != "." and s2 != ".":
+                    # Both see a piece but disagree on what it is. The
+                    # primary (unmirrored) view is the more reliable one, so
+                    # its read stands — but the disagreement caps confidence
+                    # below the amber threshold so the square always tints,
+                    # and the mirror's read is offered to the sanity layer.
+                    conf[r][c] = min(c1, _TTA_DISAGREE_CONF)
+                    ranked = list(alts[r][c] or [])
+                    if s2 not in [s for s, _ in ranked]:
+                        ranked.insert(0, (s2, c2))
+                    alts[r][c] = ranked
+                    continue
+                # Occupancy disagreement: exactly one view sees a piece.
+                if s1 == ".":
+                    # Fill from the mirror only when it is very sure —
+                    # otherwise trust the primary's "empty".
+                    if c2 >= _TTA_FILL_CONF:
+                        grid[r][c] = s2
+                        conf[r][c] = c2 * _TTA_OCCUPANCY_DAMP
+                        alts[r][c] = m_alts[r][c]
+                else:
+                    # Primary sees a piece the mirror missed: keep it, damp
+                    # confidence so a phantom read can't sit untinted.
+                    conf[r][c] = c1 * _TTA_OCCUPANCY_DAMP
 
         return grid, conf, alts
 
