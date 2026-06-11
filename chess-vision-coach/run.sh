@@ -56,5 +56,10 @@ fi
 echo ""
 echo "Starting Chess Vision Coach -> http://localhost:8000"
 echo "(Ctrl+C to stop)"
+# Default to the fine-tuned YOLO backend (98% per-square accuracy on real
+# photos). Override with `CVC_BACKEND=classical ./run.sh` for rendered
+# diagrams / synthetic boards.
+export CVC_BACKEND="${CVC_BACKEND:-model}"
+echo "Vision backend: $CVC_BACKEND"
 # Single worker: session state is in-process memory (see app/session.py).
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1

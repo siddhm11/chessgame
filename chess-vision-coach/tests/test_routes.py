@@ -173,3 +173,26 @@ def test_confidence_fill_tiers_squares():
     assert chess.parse_square("d4") in fill  # uncertain -> tinted
     assert chess.parse_square("a1") not in fill  # confident -> not tinted
     assert confidence_fill(None) == {}
+
+
+def test_upload_cleanup_removes_old_files(tmp_path, monkeypatch):
+    """Cleanup task must delete files older than the age limit."""
+    import time
+    from app.main import _cleanup_old_uploads, UPLOADS_DIR, _UPLOAD_MAX_AGE_HOURS
+
+    # Create two fake uploads: one old, one recent.
+    old_file = UPLOADS_DIR / "old_upload_test.jpg"
+    new_file = UPLOADS_DIR / "new_upload_test.jpg"
+    old_file.write_bytes(b"x")
+    new_file.write_bytes(b"x")
+
+    # Back-date the old file past the retention window.
+    old_mtime = time.time() - (_UPLOAD_MAX_AGE_HOURS + 1) * 3600
+    import os
+    os.utime(str(old_file), (old_mtime, old_mtime))
+
+    _cleanup_old_uploads()
+
+    assert not old_file.exists(), "cleanup should remove files past the age limit"
+    assert new_file.exists(), "cleanup should keep recent files"
+    new_file.unlink(missing_ok=True)  # tidy up

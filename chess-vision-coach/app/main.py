@@ -7,7 +7,8 @@ Run a SINGLE uvicorn worker -- session state lives in process memory
 
 from __future__ import annotations
 
-import shutil
+import time
+import threading
 import uuid
 from pathlib import Path
 
@@ -32,6 +33,8 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 BOARD_SIZE = 480
+# Uploads older than this are deleted by the background cleanup task.
+_UPLOAD_MAX_AGE_HOURS = 24
 
 # Per-square confidence thresholds for tinting the board.
 CONF_CHECK = 0.55  # below this: red tint ("definitely check this square")
@@ -53,6 +56,31 @@ app = FastAPI(title="Chess Vision Coach")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _cleanup_old_uploads() -> None:
+    """Delete uploads older than _UPLOAD_MAX_AGE_HOURS. Runs in a daemon thread."""
+    cutoff = time.time() - _UPLOAD_MAX_AGE_HOURS * 3600
+    for f in UPLOADS_DIR.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _start_cleanup_thread() -> None:
+    """Run cleanup once at startup, then every hour in the background."""
+    def _loop():
+        while True:
+            _cleanup_old_uploads()
+            time.sleep(3600)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+
+_start_cleanup_thread()
 
 
 # --------------------------------------------------------------------------
