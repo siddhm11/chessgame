@@ -84,26 +84,35 @@ python -m chess_vision.cli photo.jpg --orientation white --side-to-move white
 Outputs the parsed FEN, a per-square confidence grid, and a side-by-side
 visualization (`output.png`: original photo | rendered board).
 
-### Vision backend — classical (default) or YOLO11n model
+### Vision backend — fine-tuned YOLO model (default) or classical
 
 Two interchangeable backends live behind the `VisionBackend` Protocol in
 `chess_vision/vision.py`:
 
 | Backend | What it does | When it shines |
 |---|---|---|
-| `classical` (default) | Template-match each warped square against python-chess's own piece glyphs | Synthetic boards, lichess/chess.com diagrams (parses at ~100%) |
-| `model` | Ultralytics **YOLO11n** ONNX detector trained on real chess photos | Real-world boards, occluded pieces, varied piece sets |
+| `model` (default via `run.sh`) | Fine-tuned **YOLOv8n** ONNX detector (98.8% per-square on held-out real photos) | Real-world boards, occluded pieces |
+| `classical` | Template-match each warped square against python-chess's own piece glyphs | Synthetic boards, lichess/chess.com diagrams (parses at ~100%) |
 
-Switch backends by setting `CVC_BACKEND=model` before launching the app or
-the CLI. The ONNX file is vendored at
-`chess_vision/models/yolo11n-chess.onnx` (~10 MB) and is loaded lazily —
-no cost unless you actually use it. `onnxruntime` is included in
+Switch with `CVC_BACKEND=classical ./run.sh` for rendered diagrams. Three
+ONNX models are vendored in `chess_vision/models/`; `ModelBackend` prefers
+the fine-tuned one and auto-configures input size and class mapping from
+each model's metadata, so dropping in a new `.onnx` needs no code change.
+Models load lazily — no cost unless used. `onnxruntime` is in
 `requirements.txt`.
 
-> **License note:** the model weights are AGPL-3.0 (Ultralytics YOLO11
-> framework license, regardless of the dataset). Fine for personal /
-> learning use. For commercial use you'd need an Ultralytics commercial
-> license or a non-YOLO model.
+**Chess-logic sanity layer** (`chess_vision/sanity.py`): the raw detector
+grid is checked against hard chess constraints — pawns on rank 1/8, more
+than one king per colour, a missing king, more than 8 pawns per colour.
+Violations are guaranteed misreads, so they are auto-repaired from the
+model's runner-up classes when possible (e.g. the classic king↔queen
+confusion) and confidence-flagged red in the UI when not, so a wrong
+square can never slip through silently.
+
+> **License note:** the model weights are AGPL-3.0 (Ultralytics framework
+> license, regardless of the dataset; the fine-tune inherits it). Fine for
+> personal / learning use. For commercial use you'd need an Ultralytics
+> commercial license or a non-YOLO model.
 
 ---
 

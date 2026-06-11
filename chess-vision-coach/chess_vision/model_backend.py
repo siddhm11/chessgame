@@ -40,6 +40,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from chess_vision.sanity import sanitize
 from chess_vision.vision import BackendOutput, ClassicalBackend
 
 # Canonical piece name -> FEN symbol (covers both model naming conventions).
@@ -171,10 +172,12 @@ class ModelBackend:
 
     def _decode_predictions(
         self, preds: np.ndarray, threshold: float
-    ) -> tuple[list[list[str]], list[list[float]]]:
+    ) -> tuple[list[list[str]], list[list[float]], list[list[list[tuple[str, float]] | None]]]:
         """Decode a raw [N, 4+C] prediction array into an 8×8 grid.
 
         Applies confidence thresholding and NMS; boxes normalised to [0,1].
+        Also returns per-cell ranked alternative classes (from the winning
+        anchor's class-score vector) for the sanity layer's auto-repair.
         """
         imgsz = self._imgsz
         boxes_xywh = preds[:, :4].astype(np.float32)
@@ -184,6 +187,7 @@ class ModelBackend:
 
         keep_mask = confidences >= threshold
         boxes_xywh = boxes_xywh[keep_mask]
+        class_scores = class_scores[keep_mask]
         class_ids = class_ids[keep_mask]
         confidences = confidences[keep_mask]
 
@@ -203,6 +207,9 @@ class ModelBackend:
 
         grid: list[list[str]] = [["." for _ in range(8)] for _ in range(8)]
         conf: list[list[float]] = [[0.0 for _ in range(8)] for _ in range(8)]
+        alts: list[list[list[tuple[str, float]] | None]] = [
+            [None for _ in range(8)] for _ in range(8)
+        ]
         for i in kept_indices:
             symbol = self._class_to_symbol.get(int(class_ids[i]))
             if symbol is None:
@@ -214,17 +221,30 @@ class ModelBackend:
             if c > conf[row][col]:
                 grid[row][col] = symbol
                 conf[row][col] = c
+                # Ranked runner-up classes of the winning anchor, for the
+                # sanity layer's "this symbol is impossible" auto-repair.
+                scores_i = class_scores[i]
+                order = np.argsort(scores_i)[::-1]
+                ranked = []
+                for cls_idx in order:
+                    alt_sym = self._class_to_symbol.get(int(cls_idx))
+                    if alt_sym is None or alt_sym == symbol:
+                        continue
+                    if scores_i[cls_idx] < 0.01 or len(ranked) >= 3:
+                        break
+                    ranked.append((alt_sym, float(scores_i[cls_idx])))
+                alts[row][col] = ranked or None
 
         for r in range(8):
             for c_ in range(8):
                 if grid[r][c_] == ".":
                     conf[r][c_] = _EMPTY_CONF
 
-        return grid, conf
+        return grid, conf, alts
 
     def _infer_board(
         self, board_bgr: np.ndarray
-    ) -> tuple[list[list[str]], list[list[float]]]:
+    ) -> tuple[list[list[str]], list[list[float]], list]:
         """Run ONNX inference on a pre-cropped board image.
 
         Includes sparse-position recovery: if fewer than 2 pieces survive
@@ -239,14 +259,14 @@ class ModelBackend:
         raw = self._session.run(None, {self._input_name: net})[0]  # [1, 4+C, N]
         preds = raw[0].T  # [N, 4+C]
 
-        grid, conf = self._decode_predictions(preds, _CONF_THRESHOLD)
+        grid, conf, alts = self._decode_predictions(preds, _CONF_THRESHOLD)
 
         # Sparse-position recovery: revisit raw predictions at a lower bar.
         piece_count = sum(1 for row in grid for sq in row if sq != ".")
         if piece_count < 2:
-            grid, conf = self._decode_predictions(preds, _SPARSE_THRESHOLD)
+            grid, conf, alts = self._decode_predictions(preds, _SPARSE_THRESHOLD)
 
-        return grid, conf
+        return grid, conf, alts
 
     def analyze(self, image_bgr: np.ndarray) -> BackendOutput:
         self._load()
@@ -259,21 +279,30 @@ class ModelBackend:
         #    running inference. This avoids adding rotation overhead to the
         #    ~97% of images that are already correctly oriented.
         if self._board_needs_rotation(board_bgr):
-            best_grid: list[list[str]] | None = None
-            best_conf: list[list[float]] | None = None
+            best: tuple | None = None
             for rot_code in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
                 r_board = cv2.rotate(board_bgr, rot_code)
-                r_grid, r_conf = self._infer_board(r_board)
+                r_grid, r_conf, r_alts = self._infer_board(r_board)
                 r_flat = [sq for row in r_grid for sq in row]
                 if "K" in r_flat and "k" in r_flat:
                     # Both kings present — this rotation is correct.
-                    return BackendOutput(grid=r_grid, conf=r_conf, board_found=True)
-                if best_grid is None:
-                    best_grid, best_conf = r_grid, r_conf
+                    return self._finalize(r_grid, r_conf, r_alts)
+                if best is None:
+                    best = (r_grid, r_conf, r_alts)
             # Neither rotation yielded both kings; use whichever was tried first.
-            if best_grid is not None:
-                return BackendOutput(grid=best_grid, conf=best_conf, board_found=True)
+            if best is not None:
+                return self._finalize(*best)
 
         # 3. Standard inference on the (already correctly oriented) crop.
-        grid, conf = self._infer_board(board_bgr)
+        grid, conf, alts = self._infer_board(board_bgr)
+        return self._finalize(grid, conf, alts)
+
+    @staticmethod
+    def _finalize(grid, conf, alts) -> BackendOutput:
+        """Apply the chess-logic sanity layer before handing the grid out.
+
+        Impossible cells (back-rank pawns, duplicate kings, …) are repaired
+        from the model's runner-up classes or confidence-flagged for the UI.
+        """
+        grid, conf, _notes = sanitize(grid, conf, alts)
         return BackendOutput(grid=grid, conf=conf, board_found=True)
