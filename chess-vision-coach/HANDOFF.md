@@ -2,11 +2,12 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** production hardening — orientation fix, real-photo tests, Dockerfile, upload cleanup  
-**Tests:** 56 passing  
-**Status:** fully functional and production-ready. Vision accuracy: 98.81% per-square
-on held-out photos (was 98.3%), 65/68 boards within 2 wrong squares. Dockerfile ships.
-Sparse-endgame failures fixed via geometric 90°-rotation recovery.
+**Last commit:** chess-logic sanity layer (auto-repair impossible positions)  
+**Tests:** 67 passing  
+**Status:** fully functional and production-ready. Vision accuracy: **99.24%
+per-square on held-out photos** (was 98.81%), **41/68 boards parsed perfectly**
+(was 27/68). Of the remaining wrong squares, 76% are visibly tinted for review;
+~0.12 silent errors per board. Dockerfile ships.
 
 ---
 
@@ -166,9 +167,23 @@ Run with: `python bench/benchmark.py --source /tmp/chess-val-originals --n 68`
 | yolo11n-chess | 70.1% | 70.6% | 2.4% | 22.6% | 1.31 |
 | yolov8m-chess | 70.9% | 73.9% | 13.3% | 25.9% | 1.68 |
 | finetuned (before orient. fix) | 98.30% | 99.3% | 98.7% | 96.4% | 1.33 |
-| **finetuned + orient. fix** | **98.81%** | **99.3%** | **98.7%** | **96.4%** | **1.34** |
+| finetuned + orient. fix | 98.81% | 99.3% | 98.7% | 96.4% | 1.34 |
+| **finetuned + orient. fix + sanity layer** | **99.24%** | **99.9%** | **99.7%** | **97.9%** | **1.32** |
 
-Per-board: 27/68 perfect (all 64 squares), 65/68 within 2 wrong squares, 3/68 at 61/64.
+Per-board with the sanity layer: **41/68 perfect** (all 64 squares; was 27/68).
+
+**Sanity-layer A/B on the same val set** (attribution is clean — the
+no-sanity run reproduces 98.81% exactly):
+
+| | exact | type\|p | perfect boards |
+|---|---|---|---|
+| without sanity | 98.81% | 96.40% | 27/68 |
+| with sanity | 99.24% | 97.85% | 41/68 |
+
+**Mistake visibility** (the product metric for "100% right after click-fix"):
+of the 33 remaining wrong squares across all 68 boards, 12 tint red, 13 tint
+amber, **8 slip through untinted** (confidently-wrong but chess-legal reads —
+invisible to rule checks; needs a better model or TTA to close).
 
 **The 3 remaining near-misses (61/64 each):**
 - `rnbqkbnr-pppppppp-8-8-8-8-PPPPPPPP-RNBQKBNR` — starting position: 3 piece-type confusions
@@ -401,12 +416,25 @@ Result: per-square 98.3%, recall 98.7%, type|p 96.4% (see Benchmark results).
    overhead shots. Photos at more than ~30° from vertical still struggle.
    A homography-based undistortion step could help.
 
+4. **Close the 8 silent errors** (wrong squares with conf ≥ 0.80 that pass
+   all chess-rule checks). Candidates: test-time augmentation (run inference
+   on the board + its 180° flip and reconcile), or the yolov8m@640 fine-tune
+   from item 1. Measure with the A/B script pattern in this section.
+
 **Done in this session:**
 - Geometric 90°-rotation fix: 98.30% → 98.81% per-square, 63→65/68 near-perfect
 - Real-photo test suite: `tests/fixtures/real/` + `tests/test_real_photos.py` (7 tests)
 - `Dockerfile` for production containerization
 - Upload cleanup: hourly background task deletes files older than 24 h
-- Tests: 48 → 56 passing
+- **Chess-logic sanity layer** (`chess_vision/sanity.py` + 11 tests):
+  back-rank pawns, duplicate kings, missing king (K↔Q confusion), >8 pawns —
+  auto-repaired from the model's runner-up classes or confidence-flagged red.
+  98.81% → 99.24% per-square, 27 → 41/68 perfect boards.
+- `bench/sweep_threshold.py`: confidence-threshold sweep harness (verified
+  the 0.25 default is right; threshold was never the recall bottleneck)
+- End-to-end verified via TestClient: real photo → exact 64/64 FEN →
+  Stockfish best move → play-move
+- Tests: 48 → 56 → 67 passing
 
 ---
 
@@ -414,6 +442,8 @@ Result: per-square 98.3%, recall 98.7%, type|p 96.4% (see Benchmark results).
 
 | hash | what |
 |---|---|
+| `ba9c1fa` | chess-logic sanity layer: auto-repair impossible positions, 99.24% exact |
+| `a38676b` | threshold-sweep experiment (bench/sweep_threshold.py) |
 | `8293458` | production hardening: orientation fix, real-photo tests, Dockerfile, upload cleanup |
 | `b7f25fa` | update HANDOFF with fine-tuning results and reproducible pipeline |
 | `7054fb1` | make fine-tuned model the default backend; fix test shadowing |
