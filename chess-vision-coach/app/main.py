@@ -219,15 +219,28 @@ async def analyze(
             return upload_error("That image is larger than 10 MB. Please upload a smaller file.")
         if image.content_type and not image.content_type.startswith("image/"):
             return upload_error("That file is not an image. Please upload a JPG or PNG photo.")
-        decoded = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+
+        # Decode + EXIF-rotate-into-pixels via Pillow. Phones encode
+        # orientation in EXIF instead of rotating the sensor data; OpenCV
+        # would feed the pipeline a sideways board.
+        try:
+            from PIL import Image, ImageOps
+            from io import BytesIO
+
+            with Image.open(BytesIO(content)) as pil_img:
+                pil_img = ImageOps.exif_transpose(pil_img)
+                rgb = np.asarray(pil_img.convert("RGB"))
+            decoded = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception:
+            decoded = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
         if decoded is None:
             return upload_error("That image could not be read -- it may be corrupt or not a real image.")
 
-        suffix = Path(image.filename).suffix.lower()
-        if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-            suffix = ".png"
+        # Persist the upright pixels so the thumbnail in the UI matches what
+        # the pipeline actually analyses. JPEG keeps file size reasonable.
+        suffix = ".jpg"
         fname = f"{sid}_{uuid.uuid4().hex[:8]}{suffix}"
-        (UPLOADS_DIR / fname).write_bytes(content)
+        cv2.imwrite(str(UPLOADS_DIR / fname), decoded, [cv2.IMWRITE_JPEG_QUALITY, 90])
         session.original_image_url = f"/uploads/{fname}"
 
     image_path = None

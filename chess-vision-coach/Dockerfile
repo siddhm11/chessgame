@@ -11,14 +11,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         stockfish \
     && rm -rf /var/lib/apt/lists/*
 
+# Hugging Face Spaces runs the container as a non-root user (UID 1000).
+# Create that user and a writable HOME so Ultralytics / matplotlib /
+# fontconfig caches don't try to write to /root.
+RUN useradd -m -u 1000 user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
 WORKDIR /app
+RUN chown -R user:user /app
+USER user
 
 # Install Python deps before copying source so layer is cached on dep changes.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=user:user requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Copy application source.
-COPY . .
+COPY --chown=user:user . .
 
 # Uploads directory must survive container restarts; mount a volume here.
 RUN mkdir -p /app/uploads

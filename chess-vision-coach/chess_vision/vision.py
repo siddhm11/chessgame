@@ -465,14 +465,29 @@ def _grid_to_placement(grid: list[list[str]]) -> str:
 
 
 def _load_bgr(source) -> np.ndarray:
-    """Load `source` (path or BGR ndarray) into a BGR uint8 image."""
+    """Load `source` (path or BGR ndarray) into a BGR uint8 image.
+
+    Path inputs are routed through Pillow so EXIF orientation metadata is
+    honoured -- phone cameras typically write the sensor data sideways and
+    record "rotate 90° CW" in EXIF; OpenCV's imread ignores that tag and
+    would hand the pipeline a portrait crop of a landscape board.
+    """
     if isinstance(source, np.ndarray):
         img = source
     else:
         path = Path(source)
         if not path.exists():
             raise FileNotFoundError(f"image not found: {source}")
-        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        from PIL import Image, ImageOps  # local: only the loader needs PIL
+
+        try:
+            with Image.open(path) as pil_img:
+                pil_img = ImageOps.exif_transpose(pil_img)
+                rgb = np.asarray(pil_img.convert("RGB"))
+            img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception:
+            # Fall back to OpenCV for formats Pillow can't read.
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"could not decode image: {source}")
     if img.ndim == 2:

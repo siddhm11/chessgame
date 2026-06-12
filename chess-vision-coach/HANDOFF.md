@@ -2,14 +2,16 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** yolov8n@640 + K↔Q symbolic fallback in the sanity layer  
-**Tests:** 82 passing  
-**Status:** fully functional and production-ready. Vision accuracy: **99.79%
-per-square on held-out photos** (was 99.24%), **61/68 boards parsed perfectly**
-(was 41/68). Silent errors (confidently wrong, invisible to tints) **down to 2
-across 4352 squares** (was 11 silent → 2 after the symbolic K↔Q fallback).
-CI runs the suite on push. /best-move is rate-limited (0.6 s / session).
-CVC_BACKEND=model gracefully falls back to classical when the .onnx is absent.
+**Last commit:** EXIF rotation handling + Hugging Face Space deploy artifacts  
+**Tests:** 84 passing  
+**Status:** fully functional, production-ready, deploy-ready. Vision accuracy:
+**99.79% per-square on held-out photos**, **61/68 boards parsed perfectly**,
+**2 silent errors / 4352 squares**. CI runs the suite on push. /best-move is
+rate-limited per session. CVC_BACKEND=model gracefully falls back to classical
+when the .onnx is absent. Phone uploads come in upright (EXIF transpose).
+Live verified: photo → 64/64 correct FEN → Stockfish suggests best move with PV.
+HF Space deployment artifacts (SPACE_README.md + DEPLOY_HF_SPACE.md) ship with
+turn-key instructions; the Dockerfile runs as UID 1000 for Spaces compatibility.
 
 ---
 
