@@ -96,10 +96,11 @@ class ModelBackend:
             model_path = os.environ.get("CVC_MODEL_PATH")
         if model_path is None:
             models_dir = Path(__file__).resolve().parent / "models"
-            # Prefer the fine-tuned model (trained on real tournament photos,
-            # 98% per-square accuracy on held-out val); fall back to the
-            # pre-trained models if it is absent.
+            # Prefer the fine-tuned model trained on real tournament
+            # photos (99.79% per-square accuracy on held-out val with the
+            # @640 variant). Fall back through smaller / older candidates.
             for candidate in (
+                "yolov8n640-chess-finetuned.onnx",
                 "yolov8n-chess-finetuned.onnx",
                 "yolov8m-chess.onnx",
                 "yolo11n-chess.onnx",

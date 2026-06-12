@@ -2,12 +2,14 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** chess-logic sanity layer (auto-repair impossible positions)  
-**Tests:** 67 passing  
-**Status:** fully functional and production-ready. Vision accuracy: **99.24%
-per-square on held-out photos** (was 98.81%), **41/68 boards parsed perfectly**
-(was 27/68). Of the remaining wrong squares, 76% are visibly tinted for review;
-~0.12 silent errors per board. Dockerfile ships.
+**Last commit:** yolov8n@640 + K↔Q symbolic fallback in the sanity layer  
+**Tests:** 82 passing  
+**Status:** fully functional and production-ready. Vision accuracy: **99.79%
+per-square on held-out photos** (was 99.24%), **61/68 boards parsed perfectly**
+(was 41/68). Silent errors (confidently wrong, invisible to tints) **down to 2
+across 4352 squares** (was 11 silent → 2 after the symbolic K↔Q fallback).
+CI runs the suite on push. /best-move is rate-limited (0.6 s / session).
+CVC_BACKEND=model gracefully falls back to classical when the .onnx is absent.
 
 ---
 
@@ -128,7 +130,8 @@ _EMPTY_CONF     = 0.90   # confidence assigned to empty cells (no real "is empty
 
 | file | size | architecture | input | classes | source |
 |---|---|---|---|---|---|
-| `yolov8n-chess-finetuned.onnx` | 12 MB | YOLOv8n | 416×416 | 13 (board + 12 pieces) | **fine-tuned in-repo** on samryan18 photos (AGPL-3.0) |
+| `yolov8n640-chess-finetuned.onnx` | 12 MB | YOLOv8n | 640×640 | 13 (board + 12 pieces) | **fine-tuned in-repo** @640px, 13 epochs — current default (AGPL-3.0) |
+| `yolov8n-chess-finetuned.onnx` | 12 MB | YOLOv8n | 416×416 | 13 (board + 12 pieces) | fine-tuned in-repo @416px — fallback (AGPL-3.0) |
 | `yolov8m-chess.onnx` | 99 MB | YOLOv8m | 640×640 | 13 (board + 12 pieces) | NAKSTStudio/yolov8m-chess-piece-detection (AGPL-3.0) |
 | `yolo11n-chess.onnx` | 11 MB | YOLO11n | 416×416 | 12 pieces | same repo, mobile export (AGPL-3.0) |
 
@@ -168,9 +171,13 @@ Run with: `python bench/benchmark.py --source /tmp/chess-val-originals --n 68`
 | yolov8m-chess | 70.9% | 73.9% | 13.3% | 25.9% | 1.68 |
 | finetuned (before orient. fix) | 98.30% | 99.3% | 98.7% | 96.4% | 1.33 |
 | finetuned + orient. fix | 98.81% | 99.3% | 98.7% | 96.4% | 1.34 |
-| **finetuned + orient. fix + sanity layer** | **99.24%** | **99.9%** | **99.7%** | **97.9%** | **1.32** |
+| finetuned + orient. fix + sanity | 99.24% | 99.9% | 99.7% | 97.9% | 1.32 |
+| @416 + sanity + TTA | 99.26% | 99.9% | 99.8% | 97.9% | 1.34 |
+| **@640 + sanity (with K↔Q fallback) + TTA** | **99.79%** | **99.9%** | **99.9%** | **99.5%** | **1.57** |
 
-Per-board with the sanity layer: **41/68 perfect** (all 64 squares; was 27/68).
+Per-board with all repairs: **61/68 perfect** (was 41 last commit, 27 before
+sanity, 22 before fine-tuning). Silent errors (wrong but conf ≥ 0.80, invisible
+to the user) dropped from 11 → 2 across all 4352 val squares.
 
 **Sanity-layer A/B on the same val set** (attribution is clean — the
 no-sanity run reproduces 98.81% exactly):
@@ -442,6 +449,10 @@ Result: per-square 98.3%, recall 98.7%, type|p 96.4% (see Benchmark results).
 
 | hash | what |
 |---|---|
+| (this) | yolov8n@640 retrain + symbolic K↔Q fallback: 99.24% → 99.79% exact, 41 → 61/68 perfect |
+| `f62ea8e` | production hardening: CI, /best-move rate limit, graceful model fallback |
+| `939ae7b` | surface sanity-layer notes in UI ("e8: reread Q as K") |
+| `b1fdf92` | advisory test-time augmentation (mirrored view): 8 → 6 silent errors |
 | `ba9c1fa` | chess-logic sanity layer: auto-repair impossible positions, 99.24% exact |
 | `a38676b` | threshold-sweep experiment (bench/sweep_threshold.py) |
 | `8293458` | production hardening: orientation fix, real-photo tests, Dockerfile, upload cleanup |

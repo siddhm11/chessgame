@@ -142,3 +142,39 @@ def test_sanitize_handles_none_alts():
     out_grid, out_conf, _ = sanitize(grid, _full_conf())  # alts omitted
     assert out_conf[0][0] == _FLAG_CONF
     assert out_grid[0][0] == "P"
+
+
+def test_missing_king_with_duplicate_queens_picks_e_file():
+    """When the model sharply confuses K with Q, no cell may rank K in the
+    top-3 alts. With two queens on the back rank, the e-file one is the
+    real king -- fall back to that heuristic so the repair still fires."""
+    from chess_vision.sanity import sanitize
+
+    grid = [["." for _ in range(8)] for _ in range(8)]
+    grid[7][3] = "Q"  # d1: real queen
+    grid[7][4] = "Q"  # e1: misread king
+    grid[7][0] = "R"  # supply at least one other white piece
+    grid[0][4] = "k"
+    conf = [[0.95 for _ in range(8)] for _ in range(8)]
+    alts = [[None for _ in range(8)] for _ in range(8)]
+
+    out_grid, out_conf, notes = sanitize(grid, conf, alts)
+    assert out_grid[7][4] == "K", "e1 should be relabelled as K"
+    assert out_grid[7][3] == "Q", "d1 (the real queen) must stay"
+    assert out_conf[7][4] < 0.55, "repaired cell must tint red"
+    assert any("e1" in n for n in notes)
+
+
+def test_missing_king_with_single_queen_does_not_fire_efile_fallback():
+    """One queen + no king is genuinely ambiguous; do not force the swap
+    just because a queen exists. (Avoid clobbering legitimate positions
+    where the user really is missing a king somehow.)"""
+    from chess_vision.sanity import sanitize
+
+    grid = [["." for _ in range(8)] for _ in range(8)]
+    grid[7][3] = "Q"  # only one queen
+    grid[7][0] = "R"
+    grid[0][4] = "k"
+    conf = [[0.95 for _ in range(8)] for _ in range(8)]
+    out_grid, _, _ = sanitize(grid, conf)
+    assert out_grid[7][3] == "Q", "single queen must not be coerced to king"

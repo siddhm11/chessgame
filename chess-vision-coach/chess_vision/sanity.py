@@ -162,6 +162,26 @@ def sanitize(
             )
             grid[r][c] = king
             conf[r][c] = min(conf[r][c], score)
+            continue
+
+        # Fallback when no cell ranks the king as an alt: a sharply trained
+        # model can call the king a queen with such high confidence that the
+        # K class never enters the top-3 alts. In that case, if the colour
+        # has ≥2 queens, the spurious one is almost always on the king's
+        # starting file (e). Convert the queen closest to the e-file to a
+        # king, capping its confidence so the cell tints amber.
+        queen = "Q" if king == "K" else "q"
+        queen_cells = [
+            (r, c) for r in range(8) for c in range(8) if grid[r][c] == queen
+        ]
+        if len(queen_cells) >= 2:
+            r, c = min(queen_cells, key=lambda rc: (abs(rc[1] - 4), conf[rc[0]][rc[1]]))
+            notes.append(
+                f"{_square(r, c)}: no {king} found; two {queen}s "
+                f"suggest the e-file one is the {king}"
+            )
+            grid[r][c] = king
+            conf[r][c] = min(conf[r][c], _FLAG_CONF)
 
     # ── 4. more than 8 pawns per colour ──────────────────────────────────
     for pawn in ("P", "p"):
