@@ -196,3 +196,22 @@ def test_upload_cleanup_removes_old_files(tmp_path, monkeypatch):
     assert not old_file.exists(), "cleanup should remove files past the age limit"
     assert new_file.exists(), "cleanup should keep recent files"
     new_file.unlink(missing_ok=True)  # tidy up
+
+
+@pytest.mark.skipif(
+    engine.find_stockfish() is None, reason="Stockfish not installed"
+)
+def test_best_move_is_rate_limited(monkeypatch):
+    """Two /best-move calls in quick succession: the second is throttled."""
+    from app import main as app_main
+    monkeypatch.setattr(app_main, "ENGINE_MIN_INTERVAL_S", 5.0)
+
+    client = _client()
+    _upload_starting(client)
+    first = client.post("/best-move")
+    assert first.status_code == 200
+    assert "Best move" in first.text
+
+    second = client.post("/best-move")
+    assert second.status_code == 200
+    assert "Slow down" in second.text

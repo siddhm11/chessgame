@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "chess-vision-coach/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "chess-vision-coach/**"
+      - ".github/workflows/ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chess-vision-coach
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: chess-vision-coach/requirements.txt
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish libcairo2 libpango-1.0-0 libpangocairo-1.0-0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        env:
+          # CI cannot ship the 12 MB ONNX model; the suite is designed to
+          # skip the model-backend tests cleanly when the file is absent.
+          CVC_BACKEND: classical
+        run: pytest -q

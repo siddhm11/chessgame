@@ -34,6 +34,8 @@ class Session:
     per_square_confidence: dict | None = None
     # Auto-repair notes from the vision sanity layer ("e8: ... reread Q as K").
     vision_notes: list | None = None
+    # Monotonic time of the most recent /best-move call; used to throttle.
+    last_engine_request: float = 0.0
 
 
 class SessionStore:

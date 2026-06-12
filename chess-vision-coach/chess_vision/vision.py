@@ -399,13 +399,32 @@ def _make_default_backend() -> "VisionBackend":
     """Pick a backend based on the CVC_BACKEND env var.
 
     "classical" (default) -> ClassicalBackend (template matching).
-    "model"               -> ModelBackend (YOLO11n ONNX). Requires the
-                             onnxruntime package and a vendored .onnx file.
+    "model"               -> ModelBackend (fine-tuned YOLO ONNX). Requires
+                             the onnxruntime package and a vendored .onnx
+                             file; falls back to ClassicalBackend (with a
+                             warning) when either is missing, so a slim
+                             deployment degrades gracefully instead of
+                             failing every analysis.
     """
     name = os.environ.get("CVC_BACKEND", "classical").lower()
     if name == "model":
-        from chess_vision.model_backend import ModelBackend
-        return ModelBackend()
+        try:
+            from chess_vision.model_backend import ModelBackend
+
+            backend = ModelBackend()
+            if backend.model_path.exists():
+                return backend
+            print(
+                f"WARNING: CVC_BACKEND=model but {backend.model_path} is "
+                "missing; falling back to the classical backend.",
+                flush=True,
+            )
+        except ImportError:
+            print(
+                "WARNING: CVC_BACKEND=model but onnxruntime is not "
+                "installed; falling back to the classical backend.",
+                flush=True,
+            )
     return ClassicalBackend()
 
 

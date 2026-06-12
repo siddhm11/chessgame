@@ -52,6 +52,11 @@ PIECE_CODES = {
     "bK": "k", "bQ": "q", "bR": "r", "bB": "b", "bN": "n", "bP": "p",
 }
 
+# Per-session minimum gap between /best-move calls. Stockfish at "strong"
+# burns real CPU; HTMX can re-fire on each interaction. This bounds the
+# damage one client can do without making the normal flow feel sluggish.
+ENGINE_MIN_INTERVAL_S = 0.6
+
 app = FastAPI(title="Chess Vision Coach")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
@@ -302,6 +307,12 @@ def best_move(request: Request, level: str = Form("normal")) -> Response:
 
     if not session.fen:
         return panel(error="Analyze a photo before asking for the best move.")
+
+    now = time.monotonic()
+    wait = ENGINE_MIN_INTERVAL_S - (now - session.last_engine_request)
+    if wait > 0:
+        return panel(error=f"Slow down a touch -- try again in {wait:.1f} s.")
+    session.last_engine_request = now
 
     problem = fen_problem(session.fen)
     if problem:

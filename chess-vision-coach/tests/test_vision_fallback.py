@@ -53,3 +53,12 @@ def test_fallback_preserves_side_to_move_through_analyze():
     result = vision.analyze_image(noise, side_to_move="b")
     assert result.detection_failed is True
     assert result.fen.split()[1] == "b"
+
+
+def test_model_backend_falls_back_to_classical_when_onnx_missing(monkeypatch):
+    """CVC_BACKEND=model with no .onnx on disk must degrade gracefully to
+    the classical backend instead of failing every analysis."""
+    monkeypatch.setenv("CVC_BACKEND", "model")
+    monkeypatch.setenv("CVC_MODEL_PATH", "/nonexistent/model.onnx")
+    backend = vision._make_default_backend()
+    assert isinstance(backend, vision.ClassicalBackend)
