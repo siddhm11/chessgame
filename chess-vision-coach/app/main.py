@@ -7,6 +7,8 @@ Run a SINGLE uvicorn worker -- session state lives in process memory
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 import threading
 import uuid
@@ -17,6 +19,7 @@ import chess.svg
 import numpy as np
 import cv2
 from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -56,6 +59,14 @@ PIECE_CODES = {
 # burns real CPU; HTMX can re-fire on each interaction. This bounds the
 # damage one client can do without making the normal flow feel sluggish.
 ENGINE_MIN_INTERVAL_S = 0.6
+
+# How many vision analyses may run at once. Each one already uses every core
+# (onnxruntime + OpenCV thread pools), so running more in parallel just
+# oversubscribes the CPU -- measured with 4 concurrent users and no limit,
+# /analyze p95 hit 21 s. Extra requests wait their turn (asyncio, so the
+# event loop and every other endpoint stay responsive).
+VISION_CONCURRENCY = max(1, int(os.environ.get("CVC_VISION_CONCURRENCY", "1")))
+_vision_slots = asyncio.Semaphore(VISION_CONCURRENCY)
 
 app = FastAPI(title="Chess Vision Coach")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -220,27 +231,22 @@ async def analyze(
         if image.content_type and not image.content_type.startswith("image/"):
             return upload_error("That file is not an image. Please upload a JPG or PNG photo.")
 
-        # Decode + EXIF-rotate-into-pixels via Pillow. Phones encode
-        # orientation in EXIF instead of rotating the sensor data; OpenCV
-        # would feed the pipeline a sideways board.
-        try:
-            from PIL import Image, ImageOps
-            from io import BytesIO
-
-            with Image.open(BytesIO(content)) as pil_img:
-                pil_img = ImageOps.exif_transpose(pil_img)
-                rgb = np.asarray(pil_img.convert("RGB"))
-            decoded = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        except Exception:
-            decoded = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+        # Decode with EXIF orientation applied (phones store photos sideways
+        # and record the rotation in EXIF) and size capped -- the same decoder
+        # the pipeline uses for files. CPU-bound, so off the event loop:
+        # running it inline would freeze every other user's requests.
+        async with _vision_slots:
+            decoded = await run_in_threadpool(vision.decode_image_bytes, content)
         if decoded is None:
             return upload_error("That image could not be read -- it may be corrupt or not a real image.")
 
-        # Persist the upright pixels so the thumbnail in the UI matches what
-        # the pipeline actually analyses. JPEG keeps file size reasonable.
-        suffix = ".jpg"
-        fname = f"{sid}_{uuid.uuid4().hex[:8]}{suffix}"
-        cv2.imwrite(str(UPLOADS_DIR / fname), decoded, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        # Persist the upright, size-capped pixels so the thumbnail matches
+        # what the pipeline analyses (and storage stays ~0.5 MB per photo).
+        fname = f"{sid}_{uuid.uuid4().hex[:8]}.jpg"
+        await run_in_threadpool(
+            cv2.imwrite, str(UPLOADS_DIR / fname), decoded,
+            [cv2.IMWRITE_JPEG_QUALITY, 90],
+        )
         session.original_image_url = f"/uploads/{fname}"
 
     image_path = None
@@ -249,9 +255,14 @@ async def analyze(
     if image_path is None or not image_path.exists():
         return upload_error("Please choose a chessboard photo to analyze.")
 
-    result = vision.analyze_image(
-        str(image_path), orientation=orientation, side_to_move=stm
-    )
+    # The vision pipeline is ~0.5 s of all-core CPU: run it off the event
+    # loop (so other users' requests keep flowing) and behind the vision
+    # admission limit (so concurrent uploads queue instead of thrashing).
+    async with _vision_slots:
+        result = await run_in_threadpool(
+            vision.analyze_image, str(image_path),
+            orientation=orientation, side_to_move=stm,
+        )
     session.fen = result.fen
     session.orientation = orientation
     session.side_to_move = side_to_move

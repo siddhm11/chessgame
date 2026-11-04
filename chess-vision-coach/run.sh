@@ -60,6 +60,8 @@ echo "(Ctrl+C to stop)"
 # photos). Override with `CVC_BACKEND=classical ./run.sh` for rendered
 # diagrams / synthetic boards.
 export CVC_BACKEND="${CVC_BACKEND:-model}"
+# Keep memory flat under concurrent uploads (see bench/RESULTS.md).
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 echo "Vision backend: $CVC_BACKEND"
 # Single worker: session state is in-process memory (see app/session.py).
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1

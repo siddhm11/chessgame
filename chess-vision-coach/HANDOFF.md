@@ -2,16 +2,30 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** EXIF rotation handling + Hugging Face Space deploy artifacts  
-**Tests:** 84 passing  
-**Status:** fully functional, production-ready, deploy-ready. Vision accuracy:
-**99.79% per-square on held-out photos**, **61/68 boards parsed perfectly**,
-**2 silent errors / 4352 squares**. CI runs the suite on push. /best-move is
-rate-limited per session. CVC_BACKEND=model gracefully falls back to classical
-when the .onnx is absent. Phone uploads come in upright (EXIF transpose).
-Live verified: photo → 64/64 correct FEN → Stockfish suggests best move with PV.
-HF Space deployment artifacts (SPACE_README.md + DEPLOY_HF_SPACE.md) ship with
-turn-key instructions; the Dockerfile runs as UID 1000 for Spaces compatibility.
+**Last commit:** grid refinement, board-doubt gate, concurrency fixes, full evaluation  
+**Tests:** 98 passing  
+**Status:** fully functional and deploy-ready. **Read `bench/RESULTS.md` first** —
+every claim there comes from a re-runnable script.
+
+- Accuracy, 636 analyses on real labeled photos, 0 crashes: **99.77%** per-square
+  on the 68 held-out photos, **99.33%** on 44 harder never-trained-on photos
+  (was 86.0%), 99.72% with EXIF rotation, 99.77% at 55% brightness. About
+  1 *silent* (untinted) wrong square per 25 boards.
+- HTTP soak test (128 full user flows, 4 concurrent users): 0 errors, 0
+  cross-session leaks, flat memory (~315 MB).
+- Honest limit: all labeled photos are one board style shot from overhead.
+  Other boards / angled shots are **unmeasured** — the most valuable next step
+  is a labeled photo set of a different board.
+
+Earlier features still in place: CI on push, /best-move rate limit, graceful
+fallback to classical when the .onnx is absent, EXIF-upright uploads, HF Space
+artifacts (SPACE_README.md + DEPLOY_HF_SPACE.md, Dockerfile runs as UID 1000).
+
+Key mechanisms added in the latest round (see RESULTS.md for the measurements):
+`ClassicalBackend.find_board_scored` / `_refine_quad` / `_grid_fit` (snap crop
+onto the 8×8 grid), `ModelBackend._apply_board_doubt` (fit < 0.80 → whole
+board tinted + note), `/analyze` off the event loop behind
+`CVC_VISION_CONCURRENCY` (default 1), `MALLOC_ARENA_MAX=2` in Docker/run.sh.
 
 ---
 

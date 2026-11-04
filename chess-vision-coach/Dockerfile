@@ -38,5 +38,10 @@ EXPOSE 8000
 # Override with -e CVC_BACKEND=classical for diagram-only use.
 ENV CVC_BACKEND=model
 
+# Cap glibc malloc arenas. Threadpool requests each allocate ~8 MB image
+# buffers; with per-thread arenas RSS crept 350 -> 479 MB over a soak test,
+# with 2 arenas it stayed flat at ~315 MB (and p95 latency improved).
+ENV MALLOC_ARENA_MAX=2
+
 # Single worker: session store is in-process memory.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

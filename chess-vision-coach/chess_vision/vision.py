@@ -51,6 +51,9 @@ FILES = "abcdefgh"
 # Below this overall confidence the parse is treated as a failure and the
 # pipeline falls back to the starting position with detection_failed=True.
 CONF_THRESHOLD = 0.5
+# Longest side images are processed at. 24 MP phone/DSLR photos are decoded
+# straight to ~this size; the board crop still gets 2-3x the 640px it needs.
+MAX_WORK_SIDE = 2000
 # Max mean-abs-difference (0-255) vs the empty-square template to call a
 # square empty.
 EMPTY_TOL = 18.0
@@ -130,6 +133,8 @@ class ClassicalBackend:
     def __init__(self) -> None:
         self._templates: dict[str, dict[str, np.ndarray]] | None = None
         self._bg_val: dict[str, float] = {}
+        # Grid-fit score of the most recent _find_board crop, in [0.5, ~1.0].
+        self.last_board_score: float = 1.0
 
     # -- reference templates ------------------------------------------------
 
@@ -224,7 +229,7 @@ class ClassicalBackend:
         pattern = (np.indices((8, 8)).sum(axis=0) % 2) == 0
         return float(max((is_light == pattern).mean(), (is_light != pattern).mean()))
 
-    def _largest_quad(self, img_bgr: np.ndarray) -> np.ndarray | None:
+    def _largest_quad(self, img_bgr: np.ndarray, dilate_iter: int = 2) -> np.ndarray | None:
         """Find a 4-corner contour likely to be the board. Iterates the
         approxPolyDP epsilon (real-world contours rarely fit at exactly 0.02)
         and falls back to minAreaRect of the largest big-enough contour --
@@ -234,7 +239,8 @@ class ClassicalBackend:
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 30, 120)
-        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
+        if dilate_iter:
+            edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=dilate_iter)
         contours, _ = cv2.findContours(
             edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -282,54 +288,337 @@ class ClassicalBackend:
         where the board doesn't fill the frame and `_largest_quad`'s 4-corner
         contour approximation fails (real-world clutter, watermarks, edge
         labels). Tries square crops at several scales/positions and returns
-        the one with the highest checkerboard score."""
+        the (4,1,2) corner quad of the one with the highest checkerboard
+        score. Coarse by design -- `_refine_quad` snaps it to the grid."""
         h, w = img_bgr.shape[:2]
         min_dim = min(h, w)
+        # Score on a downscaled copy: the coarse search only needs the rough
+        # location, and this keeps 6000x4000 photos fast.
+        k = min(1.0, 1200.0 / max(h, w))
+        small = cv2.resize(img_bgr, (int(w * k), int(h * k))) if k < 1 else img_bgr
+        sh, sw = small.shape[:2]
         best_score = 0.0
-        best_crop: np.ndarray | None = None
+        best_quad: np.ndarray | None = None
         for side_frac in (0.95, 0.85, 0.75, 0.65, 0.55):
-            side = int(min_dim * side_frac)
-            if side < 200:
+            side = int(min(sh, sw) * side_frac)
+            if side < 200 * k or side < 64:
                 continue
-            step = max(20, side // 12)
-            for y in range(0, max(1, h - side + 1), step):
-                for x in range(0, max(1, w - side + 1), step):
-                    crop = img_bgr[y : y + side, x : x + side]
+            step = max(8, side // 12)
+            for y in range(0, max(1, sh - side + 1), step):
+                for x in range(0, max(1, sw - side + 1), step):
+                    crop = small[y : y + side, x : x + side]
                     resized = cv2.resize(crop, (BOARD_PX, BOARD_PX))
                     score = self._checkerboard_score(resized)
                     if score > best_score:
-                        best_score, best_crop = score, resized
-        return best_crop, best_score
+                        best_score = score
+                        x0, y0, s = x / k, y / k, side / k
+                        best_quad = np.array(
+                            [[[x0, y0]], [[x0 + s, y0]], [[x0 + s, y0 + s]], [[x0, y0 + s]]],
+                            dtype="float32",
+                        )
+        return best_quad, best_score
+
+    # -- grid refinement -----------------------------------------------------
+    #
+    # Every strategy above proposes a ROUGH board quad. `_checkerboard_score`
+    # takes the median of each cell's four corners, which hides a half-cell
+    # misalignment (two corners in one square + two in the next still give a
+    # plausible median). On real photos the rough quad is often the outer mat
+    # including its coordinate-label margin, or a sliding-scan crop that is
+    # half a square off -- every piece then straddles two cells.
+    #
+    # `_grid_fit` scores the four corner patches of every cell SEPARATELY, so
+    # a half-cell offset (corners in different squares) scores ~0.5 and only
+    # a grid sitting exactly on the squares scores ~1.0. `_refine_quad`
+    # rectifies the rough quad with a margin around it and searches that
+    # working image for the rectangle the 8x8 grid really occupies.
+
+    _REFINE_WORK = 900   # working-image side (px)
+    _REFINE_PAD = 100    # margin kept around the rough quad (~1.15 cells)
+    # Corner patches hugging each cell corner: score peaks within a few px of
+    # exact alignment. Used for fine-tuning and as the final judge.
+    _SHARP_INSET = 0.025
+    _SHARP_PATCH = 0.06
+    # Sharp fit above which a candidate is trusted without trying the slow
+    # sliding scan (aligned crops measure ~0.92-1.0 on real photos).
+    _GOOD_FIT = 0.90
+
+    @staticmethod
+    def _grid_fit(
+        ii: np.ndarray, x0: float, y0: float, x1: float, y1: float,
+        inset: float = 0.10, patch: float = 0.16, strict: bool = True,
+    ) -> float:
+        """Alignment score in [0.5, 1.0] for an 8x8 grid on [x0,x1]x[y0,y1].
+
+        `ii` is the integral image of a grayscale float image (cv2.integral).
+        `inset`/`patch` (fractions of a cell) set where each corner patch is
+        sampled. The default is forgiving: shifts up to ~10% of a cell score
+        the same, giving a wide basin for coarse search. Small values (e.g.
+        0.025/0.06) hug the cell corners so the score peaks sharply at exact
+        alignment -- used for the final fine-tuning.
+        """
+        cw, ch = (x1 - x0) / 8.0, (y1 - y0) / 8.0
+        if cw < 8 or ch < 8:
+            return 0.0
+        ix, iy = inset * cw, inset * ch                       # inset from corner
+        pw, ph = max(2.0, patch * cw), max(2.0, patch * ch)   # patch size
+        cx = x0 + np.arange(8) * cw
+        cy = y0 + np.arange(8) * ch
+        xs = np.stack([cx + ix, cx + cw - ix - pw])          # (2, 8) left/right
+        ys = np.stack([cy + iy, cy + ch - iy - ph])          # (2, 8) top/bottom
+        H, W = ii.shape[0] - 1, ii.shape[1] - 1
+        xa = np.clip(np.rint(xs), 0, W - 1).astype(int)
+        xb = np.clip(np.rint(xs + pw), 1, W).astype(int)
+        ya = np.clip(np.rint(ys), 0, H - 1).astype(int)
+        yb = np.clip(np.rint(ys + ph), 1, H).astype(int)
+        # vals[ty, tx, r, c]: mean of patch (ty,tx) in cell (r,c).
+        Y1, Y2 = ya[:, None, :, None], yb[:, None, :, None]
+        X1, X2 = xa[None, :, None, :], xb[None, :, None, :]
+        area = np.maximum(1, (Y2 - Y1) * (X2 - X1))
+        vals = (ii[Y2, X2] - ii[Y1, X2] - ii[Y2, X1] + ii[Y1, X1]) / area
+        flat = np.sort(vals.ravel())
+        # Otsu threshold over the 256 patch means.
+        n = flat.size
+        csum = np.cumsum(flat)
+        k = np.arange(1, n)
+        m0 = csum[:-1] / k
+        m1 = (csum[-1] - csum[:-1]) / (n - k)
+        t_idx = int(np.argmax(k * (n - k) * (m0 - m1) ** 2))
+        thr = (flat[t_idx] + flat[t_idx + 1]) / 2.0
+        light = vals > thr
+        pattern = (np.indices((8, 8)).sum(axis=0) % 2) == 0
+        match = light == pattern[None, None]          # (2, 2, 8, 8)
+        if match.mean() < 0.5:                        # parity is arbitrary
+            match = ~match
+        # Every row AND every column must look like chessboard. A grid shifted
+        # by one whole square keeps the alternation everywhere except the one
+        # row/column hanging off the board -- the mean barely notices (~6%),
+        # the worst line drops to ~0.5.
+        # `strict=False` keeps only the mean: smooth, so hill-climbing has a
+        # slope to follow far from the answer -- but blind to whole-square
+        # shifts. Use it to search; use strict to judge.
+        if strict:
+            per_col = match.mean(axis=(0, 1, 2))
+            per_row = match.mean(axis=(0, 1, 3))
+            worst = min(per_col.min(), per_row.min())
+            score = 0.5 * match.mean() + 0.5 * worst
+        else:
+            score = match.mean()
+        # Weak tie-breaker towards high light/dark contrast, so a grid on the
+        # real squares beats a same-pattern grid spilling onto the mat.
+        contrast = (m1[t_idx] - m0[t_idx]) / 255.0
+        return float(score + 0.02 * contrast)
+
+    @staticmethod
+    def _lattice_1d(profile: np.ndarray, lo: float, hi: float) -> tuple[float, float]:
+        """Best 9 equally spaced peaks in `profile`: returns (offset, spacing).
+
+        Spacing is searched over [lo, hi] px; every offset is tried. The 9
+        points are the board's 7 interior grid lines plus its 2 outer edges.
+        """
+        n = profile.size
+        best = (-1.0, 0.0, lo)
+        k = np.arange(9)
+        for c in np.arange(lo, hi, 0.5):
+            span = 8 * c
+            if span >= n - 1:
+                break
+            offs = np.arange(0, n - 1 - span)
+            idx = np.rint(offs[:, None] + k[None, :] * c).astype(int)
+            s = profile[idx].sum(axis=1)
+            i = int(np.argmax(s))
+            if s[i] > best[0]:
+                best = (float(s[i]), float(offs[i]), float(c))
+        return best[1], best[2]
+
+    def _lattice_init(self, gray: np.ndarray) -> list[float]:
+        """Estimate the 8x8 grid rectangle from straight, evenly spaced edges.
+
+        Grid lines run the full board length, so the MEDIAN edge strength
+        along each column (or row) is high only on grid lines -- pieces, which
+        cover a minority of any line, barely move it. A 1-D search for 9
+        evenly spaced peaks per axis then gives scale and position directly,
+        avoiding the many local optima a hill-climb meets on a periodic board.
+        """
+        S = gray.shape[0]
+        g = cv2.GaussianBlur(gray, (5, 5), 0)
+        gx = np.abs(cv2.Sobel(g, cv2.CV_64F, 1, 0, ksize=3))
+        gy = np.abs(cv2.Sobel(g, cv2.CV_64F, 0, 1, ksize=3))
+        band = slice(int(0.3 * S), int(0.7 * S))   # surely inside the board
+        px = np.median(gx[band, :], axis=0)
+        py = np.median(gy[:, band], axis=1)
+        px = np.convolve(px, np.ones(3) / 3, mode="same")
+        py = np.convolve(py, np.ones(3) / 3, mode="same")
+        lo, hi = 0.35 * S / 8, 1.0 * S / 8
+        ox, cx = self._lattice_1d(px, lo, hi)
+        oy, cy = self._lattice_1d(py, lo, hi)
+        return [ox, oy, ox + 8 * cx, oy + 8 * cy]
+
+    def _refine_quad(self, img_bgr: np.ndarray, quad: np.ndarray) -> tuple[np.ndarray, float]:
+        """Snap a rough board quad onto the actual 8x8 grid.
+
+        Returns (refined quad in original-image coords, grid-fit score).
+        """
+        S, P = self._REFINE_WORK, self._REFINE_PAD
+        src = self._order_points(quad)
+        dst = np.array([[P, P], [S - P, P], [S - P, S - P], [P, S - P]], dtype="float32")
+        M = cv2.getPerspectiveTransform(src, dst)
+        work = cv2.warpPerspective(img_bgr, M, (S, S), borderMode=cv2.BORDER_REPLICATE)
+        gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY).astype(np.float64)
+        ii = cv2.integral(gray)
+
+        rect = [float(P), float(P), float(S - P), float(S - P)]  # x0,y0,x1,y1
+        best = self._grid_fit(ii, *rect)
+        min_side = 0.35 * S
+
+        def moves(step):
+            for d in range(-4, 5):
+                if d == 0:
+                    continue
+                o = d * step
+                yield (o, 0, o, 0)      # translate x
+                yield (0, o, 0, o)      # translate y
+                yield (-o, -o, o, o)    # scale about centre
+                yield (o, 0, 0, 0)
+                yield (0, o, 0, 0)
+                yield (0, 0, o, 0)
+                yield (0, 0, 0, o)
+
+        def climb(rect, steps, **fit_kw):
+            best = self._grid_fit(ii, *rect, **fit_kw)
+            for step in steps:
+                for _ in range(8):
+                    improved = False
+                    for dx0, dy0, dx1, dy1 in moves(step):
+                        c = [rect[0] + dx0, rect[1] + dy0, rect[2] + dx1, rect[3] + dy1]
+                        if (c[0] < 0 or c[1] < 0 or c[2] > S or c[3] > S
+                                or c[2] - c[0] < min_side or c[3] - c[1] < min_side):
+                            continue
+                        s = self._grid_fit(ii, *c, **fit_kw)
+                        if s > best + 1e-9:
+                            best, rect, improved = s, c, True
+                    if not improved:
+                        break
+            return rect
+
+        def judge(r):
+            return self._grid_fit(ii, *r, inset=self._SHARP_INSET, patch=self._SHARP_PATCH)
+
+        def fit_from(start):
+            # Every stage is judged by the same strict score and the best is
+            # kept, so refinement can never return a worse grid than it was
+            # given (the smooth stage-1 score can be led astray by lighting
+            # gradients). On near-ties the LATER stage wins: stage 3 pins
+            # sub-square precision that the forgiving score cannot see.
+            staged = [start]
+            # Stage 1 -- smooth mean score, wide basin: find the squares.
+            # May settle a whole square off (the mean can't see that).
+            rect = climb(start, (24, 12, 6), strict=False)
+            staged.append(rect)
+            # Stage 2 -- explicitly try whole-square shifts, judged strictly
+            # (every row and column must be chessboard).
+            cw, ch = (rect[2] - rect[0]) / 8.0, (rect[3] - rect[1]) / 8.0
+            options = [(self._grid_fit(ii, *rect), rect)]
+            for sx in (-1, 0, 1):
+                for sy in (-1, 0, 1):
+                    c = [rect[0] + sx * cw, rect[1] + sy * ch,
+                         rect[2] + sx * cw, rect[3] + sy * ch]
+                    if c[0] >= 0 and c[1] >= 0 and c[2] <= S and c[3] <= S:
+                        options.append((self._grid_fit(ii, *c), c))
+            rect = max(options, key=lambda o: o[0])[1]
+            staged.append(rect)
+            # Stage 3 -- sharp corner patches: pin each edge exactly onto
+            # the square boundary.
+            rect = climb(rect, (6, 3, 2, 1), inset=self._SHARP_INSET, patch=self._SHARP_PATCH)
+            staged.append(rect)
+            # Judge with the SHARP strict score. The forgiving patches can't
+            # tell a grid sitting exactly on the squares from one ~1/6 square
+            # off (both ~0.9, measured); the sharp patches collapse within a
+            # few pixels of misalignment, so the best-aligned stage wins.
+            scored = [(judge(r), r) for r in staged]
+            top = max(s for s, _ in scored)
+            return next((s, r) for s, r in reversed(scored) if s >= top - 0.01)
+
+        # Two starting points: the rough candidate itself, and an estimate
+        # from evenly spaced straight edges (robust when the candidate's
+        # scale is far off, e.g. a mat with a wide label margin).
+        starts = [rect]
+        try:
+            lat = self._lattice_init(gray)
+            if lat[2] - lat[0] >= min_side and lat[3] - lat[1] >= min_side:
+                starts.append(lat)
+        except (ValueError, IndexError):
+            pass
+        best, rect = max((fit_from(s) for s in starts), key=lambda o: o[0])
+
+        x0, y0, x1, y1 = rect
+        pts = np.array([[[x0, y0]], [[x1, y0]], [[x1, y1]], [[x0, y1]]], dtype="float32")
+        refined = cv2.perspectiveTransform(pts, np.linalg.inv(M))
+        return refined, best
 
     def _find_board(self, img_bgr: np.ndarray) -> np.ndarray:
-        """Return the board cropped/warped to BOARD_PX x BOARD_PX.
+        """Compatibility wrapper: the crop only, with the grid-fit score left
+        on `self.last_board_score`. NOT safe when one backend instance serves
+        concurrent requests -- use `find_board_scored` there."""
+        crop, score = self.find_board_scored(img_bgr)
+        self.last_board_score = score
+        return crop
 
-        Three candidate strategies, scored on checkerboard cleanness:
-          (a) whole frame resized -- works on synthetic fixtures.
-          (b) largest 4-corner quad warp -- works on board-fills-frame photos.
-          (c) sliding-square scan -- works on top-down photos where the board
-              is a sub-rectangle in white/textured background (real-world
-              stock photos, phone shots with margin).
-        Highest checkerboard score wins.
+    def find_board_scored(self, img_bgr: np.ndarray) -> tuple[np.ndarray, float]:
+        """Return (board warped to BOARD_PX x BOARD_PX, grid-fit score).
+
+        Rough candidates:
+          (a) whole frame -- synthetic fixtures / board fills the frame.
+          (b) largest 4-corner quad -- board edge clearly visible.
+          (c) sliding-square scan -- board is a sub-rectangle of the photo.
+        Each is snapped onto the 8x8 grid by `_refine_quad`; the best grid fit
+        wins. The score (sharp `_grid_fit`, ~0.9-1.0 when the crop sits on the
+        squares) lets callers tell a trustworthy crop from a doubtful one.
+        Pure function of the input: no shared state, thread-safe.
         """
         whole = cv2.resize(img_bgr, (BOARD_PX, BOARD_PX))
-        best_score = self._checkerboard_score(whole)
-        best = whole
-        if best_score >= 0.97:
-            return best
+        if self._checkerboard_score(whole) >= 0.97:
+            # Rendered diagrams / perfectly framed boards: already aligned.
+            ii = cv2.integral(cv2.cvtColor(whole, cv2.COLOR_BGR2GRAY).astype(np.float64))
+            score = self._grid_fit(
+                ii, 0, 0, BOARD_PX, BOARD_PX,
+                inset=self._SHARP_INSET, patch=self._SHARP_PATCH)
+            return whole, float(score)
 
-        quad = self._largest_quad(img_bgr)
-        if quad is not None:
-            warped = self._warp_quad(img_bgr, quad)
-            s = self._checkerboard_score(warped)
-            if s > best_score:
-                best_score, best = s, warped
+        h, w = img_bgr.shape[:2]
+        best_quad, best_score = None, -1.0
 
-        scan_crop, scan_score = self._scan_for_board(img_bgr)
-        if scan_crop is not None and scan_score > best_score:
-            best_score, best = scan_score, scan_crop
+        def consider(cand):
+            nonlocal best_quad, best_score
+            try:
+                refined, score = self._refine_quad(img_bgr, cand)
+            except cv2.error:
+                return
+            if score > best_score:
+                best_quad, best_score = refined, score
 
-        return best
+        consider(np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype="float32"))
+        # Contour quads at several edge thicknesses. Which one isolates the
+        # board edge depends on resolution and clutter (thick edges merge the
+        # board with its label strip; thin ones break the outline) -- measured,
+        # no single setting works on every photo. Most reliable first; stop
+        # as soon as one fits confidently.
+        for dilate_iter in (1, 2, 0):
+            if best_score >= self._GOOD_FIT:
+                break
+            quad = self._largest_quad(img_bgr, dilate_iter=dilate_iter)
+            if quad is not None:
+                consider(quad.astype("float32"))
+        # The sliding scan is the slowest step (~0.5 s); only pay for it when
+        # the cheaper candidates didn't already land a confident grid fit.
+        if best_score < self._GOOD_FIT:
+            scan_quad, _ = self._scan_for_board(img_bgr)
+            if scan_quad is not None:
+                consider(scan_quad)
+
+        if best_quad is None:
+            return whole, float(best_score)
+        return self._warp_quad(img_bgr, best_quad), float(best_score)
 
     # -- per-square classification -----------------------------------------
 
@@ -478,20 +767,52 @@ def _load_bgr(source) -> np.ndarray:
         path = Path(source)
         if not path.exists():
             raise FileNotFoundError(f"image not found: {source}")
-        from PIL import Image, ImageOps  # local: only the loader needs PIL
-
-        try:
-            with Image.open(path) as pil_img:
-                pil_img = ImageOps.exif_transpose(pil_img)
-                rgb = np.asarray(pil_img.convert("RGB"))
-            img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        except Exception:
-            # Fall back to OpenCV for formats Pillow can't read.
-            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        img = _decode_upright(path)
+        if img is None:
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)  # formats PIL can't read
     if img is None:
         raise ValueError(f"could not decode image: {source}")
+    return _normalise(img)
+
+
+def decode_image_bytes(data: bytes) -> np.ndarray | None:
+    """Decode uploaded bytes exactly as `_load_bgr` decodes a file: EXIF
+    orientation applied, size capped at MAX_WORK_SIDE. None if undecodable."""
+    from io import BytesIO
+
+    img = _decode_upright(BytesIO(data))
+    if img is None:
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    return None if img is None else _normalise(img)
+
+
+def _decode_upright(fp) -> np.ndarray | None:
+    """Pillow decode with EXIF orientation applied. JPEGs are decoded straight
+    at reduced scale (DCT-domain draft mode, near free); draft keeps both
+    sides >= the request, so the board keeps far more pixels than the 640px
+    crop needs. Returns BGR, or None if Pillow can't read it."""
+    from PIL import Image, ImageOps  # local: only the loaders need PIL
+
+    try:
+        with Image.open(fp) as pil_img:
+            pil_img.draft("RGB", (MAX_WORK_SIDE, MAX_WORK_SIDE))
+            pil_img = ImageOps.exif_transpose(pil_img)
+            rgb = np.asarray(pil_img.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
+
+def _normalise(img: np.ndarray) -> np.ndarray:
+    """3-channel BGR, longest side capped at MAX_WORK_SIDE. Board finding is
+    the slow stage and scales with pixel count; the model only ever sees a
+    640px crop."""
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    h, w = img.shape[:2]
+    if max(h, w) > MAX_WORK_SIDE:
+        k = MAX_WORK_SIDE / float(max(h, w))
+        img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA)
     return img
 
 

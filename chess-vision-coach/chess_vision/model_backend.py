@@ -43,6 +43,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import threading
 from pathlib import Path
 
 import cv2
@@ -69,6 +70,13 @@ _CONF_THRESHOLD = 0.25
 _SPARSE_THRESHOLD = 0.12   # used only when < 2 pieces survive the normal threshold
 _NMS_THRESHOLD = 0.45
 _EMPTY_CONF = 0.90
+
+# Board-crop doubt gate. Below this grid-fit score (ClassicalBackend's sharp
+# _grid_fit, ~0.9-1.0 for a crop sitting exactly on the squares) the crop is
+# probably misaligned; every square is capped to _BOARD_DOUBT_CONF -- inside
+# the app's amber tint band (0.55-0.80) -- and the user is told why.
+_BOARD_DOUBT_FIT = 0.80
+_BOARD_DOUBT_CONF = 0.70
 
 # Test-time augmentation (second inference on the mirrored board).
 _TTA_ENABLED = os.environ.get("CVC_TTA", "1") != "0"
@@ -118,10 +126,22 @@ class ModelBackend:
         self._imgsz: int = 416
         self._class_to_symbol: dict[int, str] = _FALLBACK_CLASS_TO_SYMBOL
         self._board_finder = ClassicalBackend()
+        # Grid fit of the most recent analyze(); diagnostics only -- the
+        # doubt gate uses the per-call value, never this shared attribute.
+        self.last_board_score: float = 1.0
+        # One backend instance serves every request (the app's singleton);
+        # guard the lazy session creation so two first requests don't race.
+        self._load_lock = threading.Lock()
 
     def _load(self):
         if self._session is not None:
             return self._session
+        with self._load_lock:
+            if self._session is None:
+                self._create_session()
+        return self._session
+
+    def _create_session(self):
         if not self.model_path.exists():
             raise FileNotFoundError(
                 f"ONNX model not found at {self.model_path}. "
@@ -135,19 +155,22 @@ class ModelBackend:
                 "Install with: pip install onnxruntime"
             ) from exc
 
-        self._session = ort.InferenceSession(
+        # Build into a local and publish self._session LAST: _load's unlocked
+        # fast path treats a non-None session as "fully configured", so the
+        # input size and class map must already be set when it appears.
+        session = ort.InferenceSession(
             str(self.model_path), providers=["CPUExecutionProvider"]
         )
-        self._input_name = self._session.get_inputs()[0].name
+        self._input_name = session.get_inputs()[0].name
 
-        meta = self._session.get_modelmeta().custom_metadata_map
+        meta = session.get_modelmeta().custom_metadata_map
 
         # Input size from metadata (falls back to ONNX input shape).
         try:
             imgsz = json.loads(meta.get("imgsz", "[416, 416]"))
             self._imgsz = int(imgsz[0])
         except Exception:
-            self._imgsz = int(self._session.get_inputs()[0].shape[2])
+            self._imgsz = int(session.get_inputs()[0].shape[2])
 
         # Class mapping from metadata names dict.
         try:
@@ -162,7 +185,7 @@ class ModelBackend:
         except Exception:
             pass  # keep fallback
 
-        return self._session
+        self._session = session
 
     @staticmethod
     def _cell_corner_brightness(gray: np.ndarray, row: int, col: int) -> float:
@@ -346,8 +369,37 @@ class ModelBackend:
     def analyze(self, image_bgr: np.ndarray) -> BackendOutput:
         self._load()
 
-        # 1. Geometric board crop + warp.
-        board_bgr = self._board_finder._find_board(image_bgr)
+        # 1. Geometric board crop + warp. The scored variant returns the fit
+        #    instead of stashing it on the shared finder, so concurrent
+        #    requests on this one backend instance can't read each other's.
+        board_bgr, board_fit = self._board_finder.find_board_scored(image_bgr)
+        self.last_board_score = board_fit  # diagnostics only (bench scripts)
+        out = self._analyze_board(board_bgr)
+        return self._apply_board_doubt(out, board_fit)
+
+    @staticmethod
+    def _apply_board_doubt(out: BackendOutput, board_fit: float) -> BackendOutput:
+        """If the crop doesn't sit cleanly on the 8x8 grid, say so.
+
+        Measured on 112 held-out photos: the 5% with grid fit < 0.80 held 78%
+        of all wrong squares, typically pieces read one square off. Those
+        reads used to come back with high confidence -- silently wrong. Now
+        every square is capped into the amber band and a note explains why,
+        so the user checks the board (or retakes the photo) instead of
+        trusting it.
+        """
+        if board_fit >= _BOARD_DOUBT_FIT:
+            return out
+        conf = [[min(c, _BOARD_DOUBT_CONF) for c in row] for row in out.conf]
+        note = (
+            f"Board alignment uncertain (grid fit {board_fit:.2f}): pieces may "
+            "be read one square off. Check every square, or retake the photo "
+            "from directly above with the whole board in frame."
+        )
+        return BackendOutput(grid=out.grid, conf=conf, board_found=out.board_found,
+                             notes=[note, *out.notes])
+
+    def _analyze_board(self, board_bgr: np.ndarray) -> BackendOutput:
 
         # 2. Geometric orientation check: if the board crop is 90°-rotated
         #    (detectable from a8/h8 corner brightness), correct it before
