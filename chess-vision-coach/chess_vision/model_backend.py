@@ -101,6 +101,13 @@ _CORNER_PX = 8
 class ModelBackend:
     """YOLO ONNX piece detector. Auto-configures from model metadata."""
 
+    # No "low average confidence -> give up" gate: this backend has explicit,
+    # measured gates (NO_BOARD_FIT for "no board", the doubt gate and the
+    # sanity layer for "board found, read unreliable"). When those tint the
+    # whole board, the user must see that read flagged -- not have it
+    # replaced by a starting position and "couldn't find a chessboard".
+    overall_confidence_gate = False
+
     def __init__(self, model_path: str | os.PathLike | None = None) -> None:
         if model_path is None:
             model_path = os.environ.get("CVC_MODEL_PATH")

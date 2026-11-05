@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 
-import cairosvg
 import chess
 import chess.svg
 import numpy as np
@@ -49,6 +48,12 @@ def board_svg(
 
 
 def svg_to_png_bytes(svg: str, *, width: int, height: int) -> bytes:
+    # Imported here, not at module load: Cairo is a native library that is
+    # often missing on Windows, and the web app only needs SVG -- so the app
+    # must start without it. Only PNG rendering (CLI, classical backend)
+    # needs Cairo.
+    import cairosvg
+
     return cairosvg.svg2png(
         bytestring=svg.encode("utf-8"),
         output_width=width,

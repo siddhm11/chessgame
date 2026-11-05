@@ -210,6 +210,9 @@ class ClassicalBackend:
     """No-model board reader: detect board -> warp -> classify 64 squares."""
 
     name = "classical-opencv"
+    # Template matching has no other sense of "this isn't working": a low
+    # average match score means give up and let the user set the board up.
+    overall_confidence_gate = True
 
     def __init__(self) -> None:
         self._templates: dict[str, dict[str, np.ndarray]] | None = None
@@ -812,15 +815,16 @@ _DEFAULT_BACKEND: "VisionBackend | None" = None
 def _make_default_backend() -> "VisionBackend":
     """Pick a backend based on the CVC_BACKEND env var.
 
-    "classical" (default) -> ClassicalBackend (template matching).
-    "model"               -> ModelBackend (fine-tuned YOLO ONNX). Requires
+    "model" (default)     -> ModelBackend (fine-tuned YOLO ONNX). Requires
                              the onnxruntime package and a vendored .onnx
                              file; falls back to ClassicalBackend (with a
                              warning) when either is missing, so a slim
                              deployment degrades gracefully instead of
                              failing every analysis.
+    "classical"           -> ClassicalBackend (template matching; good on
+                             rendered diagrams, poor on real photos).
     """
-    name = os.environ.get("CVC_BACKEND", "classical").lower()
+    name = os.environ.get("CVC_BACKEND", "model").lower()
     if name == "model":
         try:
             from chess_vision.model_backend import ModelBackend
@@ -1030,7 +1034,7 @@ def analyze_image(
 
         scores = [v for row in conf for v in row]
         overall = float(sum(scores) / len(scores)) if scores else 0.0
-        if overall < CONF_THRESHOLD:
+        if overall < CONF_THRESHOLD and getattr(backend, "overall_confidence_gate", True):
             return fallback_result(side_to_move)
 
         placement = _grid_to_placement(grid)

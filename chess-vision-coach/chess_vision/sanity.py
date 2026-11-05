@@ -38,6 +38,9 @@ FILES = "abcdefgh"
 # Below the app's red-tint threshold (0.55) by a wide margin.
 _FLAG_CONF = 0.20
 
+# Confidence for empty squares when the whole read is implausible (amber).
+_IMPLAUSIBLE_EMPTY_CONF = 0.70
+
 # Minimum class score an alternative needs before we trust an auto-swap.
 _MIN_ALT_SCORE = 0.03
 
@@ -200,4 +203,43 @@ def sanitize(
                 "flagged the least confident"
             )
 
+    # ── 5. material that no game can reach ───────────────────────────────
+    # Every queen beyond the first, rook/bishop/knight beyond the second,
+    # must be a promoted pawn: extras <= 8 - pawns on the board. A read like
+    # "11 white queens, 0 pawns" means the model doesn't recognise this
+    # piece set -- typically many squares are wrong, with HIGH confidence.
+    # We can't tell which, so the whole board is tinted for checking.
+    # (Never fires on any of the 500 real positions in samryan18.)
+    for problem in material_problems("/".join("".join(r) for r in grid)):
+        for r in range(8):
+            for c in range(8):
+                cap = _FLAG_CONF if grid[r][c] != "." else _IMPLAUSIBLE_EMPTY_CONF
+                conf[r][c] = min(conf[r][c], cap)
+        notes.append(f"{problem} -- several pieces are misread (this piece set may be "
+                     "unfamiliar to the model). Please check every square.")
+
     return grid, conf, notes
+
+
+def material_problems(placement: str) -> list[str]:
+    """Material that no legal game can reach, per colour, as messages.
+
+    `placement` is the board part of a FEN. Extra pieces (queens beyond 1,
+    rooks/bishops/knights beyond 2) must come from promoted pawns, so they
+    can't exceed 8 minus the pawns still on the board.
+    """
+    problems = []
+    for colour, upper in (("White", True), ("Black", False)):
+        n = {k: 0 for k in "pnbrqk"}
+        for ch in placement:
+            if ch.isalpha() and ch.isupper() == upper:
+                n[ch.lower()] += 1
+        if n["p"] > 8:
+            continue   # rule 4 handles too many pawns, more precisely
+        extra = (max(0, n["q"] - 1) + max(0, n["r"] - 2)
+                 + max(0, n["b"] - 2) + max(0, n["n"] - 2))
+        if extra > 8 - n["p"]:
+            problems.append(
+                f"{colour} has {n['q']} queens, {n['r']} rooks, {n['b']} bishops and "
+                f"{n['n']} knights with {n['p']} pawns, which no game can reach")
+    return problems

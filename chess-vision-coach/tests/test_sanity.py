@@ -178,3 +178,38 @@ def test_missing_king_with_single_queen_does_not_fire_efile_fallback():
     conf = [[0.95 for _ in range(8)] for _ in range(8)]
     out_grid, _, _ = sanitize(grid, conf)
     assert out_grid[7][3] == "Q", "single queen must not be coerced to king"
+
+
+# ---- rule 5: material no game can reach --------------------------------------
+
+def test_material_rule_accepts_real_and_promoted_positions():
+    from chess_vision.sanity import material_problems
+    assert material_problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR") == []
+    assert material_problems("4k3/8/8/8/8/8/PPPPPPP1/QQ2K3") == []      # 2 queens, 7 pawns: legal
+    assert material_problems("4k3/8/8/8/8/8/PPPPPP2/QQQ1K3") == []      # 3 queens, 6 pawns: legal
+
+
+def test_material_rule_rejects_unreachable_material():
+    from chess_vision.sanity import material_problems
+    probs = material_problems("4k3/8/8/8/8/8/PPPPPPP1/QQQ1K3")          # 3 queens, 7 pawns
+    assert len(probs) == 1 and probs[0].startswith("White has 3 queens")
+    # What the model read on an unfamiliar piece set (photo of a start position):
+    assert len(material_problems("rnqkbnr1/nnn1n1n1/1q1n1q2/6q1/3n1n2/4Q3/QQQQNQNQ/NQKbQQQN")) == 2
+
+
+def test_unreachable_material_tints_whole_board():
+    grid = [list(r.replace("1", ".")) for r in
+            ["....k...", "........", "........", "........", "........", "........",
+             "QQQQQQQQ", "QQQQKQQQ"]]
+    conf = [[0.99] * 8 for _ in range(8)]
+    out_grid, out_conf, notes = sanitize(grid, conf)
+    assert out_grid == grid                                  # flag, don't guess
+    assert all(out_conf[r][c] <= 0.2 for r in range(8) for c in range(8) if grid[r][c] != ".")
+    assert all(out_conf[r][c] <= 0.7 for r in range(8) for c in range(8))
+    assert any("no game can reach" in n for n in notes)
+
+
+def test_app_refuses_to_analyse_unreachable_material():
+    from app.main import fen_problem
+    msg = fen_problem("4k3/8/8/8/8/8/QQQQQQQQ/QQQQKQQQ w - - 0 1")
+    assert msg and msg.startswith("Invalid position") and "no game can reach" in msg

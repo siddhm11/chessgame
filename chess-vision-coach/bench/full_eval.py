@@ -80,7 +80,8 @@ def conf_to_grid(psc: dict) -> list[list[float]]:
 
 
 def evaluate(items, label):
-    """items: list of (path, truth_grid). Returns a metrics dict."""
+    """items: (path, truth_grid[, orientation[, true_corners, use_corners]]).
+    Returns a metrics dict."""
     sq = exact = truth_pc = found = type_ok = 0
     silent = flagged_wrong = false_tint = 0
     perfect = within2 = fallback = crashes = 0
@@ -90,15 +91,24 @@ def evaluate(items, label):
     lat: list[float] = []
     finder = vision._get_default_backend()  # exposes last_board_score
 
-    for path, truth in items:
+    board_hits = board_checked = 0
+    for item in items:
+        path, truth = item[0], item[1]
+        orientation = item[2] if len(item) > 2 else "white"
+        true_corners = item[3] if len(item) > 3 else None
+        give = true_corners if (len(item) > 4 and item[4]) else None
         try:
             t0 = time.perf_counter()
-            res = vision.analyze_image(str(path), orientation="white", side_to_move="w")
+            res = vision.analyze_image(str(path), orientation=orientation, side_to_move="w",
+                                       corners=give)
             lat.append(time.perf_counter() - t0)
         except Exception as exc:  # analyze_image should never raise
             crashes += 1
             print(f"    CRASH {path.name}: {exc!r}")
             continue
+        if true_corners and give is None:
+            board_checked += 1
+            board_hits += _board_within_quarter_square(path, res.board_corners, true_corners)
         if res.detection_failed:
             fallback += 1
             errors_per_board.append(64)
@@ -156,6 +166,7 @@ def evaluate(items, label):
         "wrong_flagged": flagged_wrong,
         "wrong_silent": silent,
         "false_tints_per_board": false_tint / n,
+        "board_found_within_quarter_square": (board_hits, board_checked),
         "p50_s": lat[len(lat) // 2] if lat else 0,
         "p95_s": lat[min(len(lat) - 1, int(len(lat) * 0.95))] if lat else 0,
         "top_confusions": confusions.most_common(6),
@@ -164,6 +175,9 @@ def evaluate(items, label):
         )[:3],
         "per_photo": per_photo,
     }
+    if board_checked:
+        print(f"  {label}: board finder within 1/4 square of the true corners on "
+              f"{board_hits}/{board_checked} photos")
     print(
         f"  {label:<10} n={n:>3}  exact={out['exact']:.2%}  "
         f"perfect={perfect}/{n} ({perfect / n:.0%})  within2={within2}/{n}  "
@@ -171,6 +185,42 @@ def evaluate(items, label):
         f"fallback={fallback} crash={crashes}  p50={out['p50_s']:.2f}s p95={out['p95_s']:.2f}s"
     )
     return out
+
+
+def _board_within_quarter_square(path, found, truth) -> bool:
+    """Every detected corner within 1/4 of a square of the annotated one.
+    Corner order is irrelevant (both sets sorted the same way first)."""
+    if not found:
+        return False
+    with Image.open(path) as im:
+        w, h = im.size
+    def px(pts):
+        a = np.array(pts, dtype=float) * [w, h]
+        s, d = a.sum(1), np.diff(a, axis=1).ravel()
+        return np.array([a[np.argmin(s)], a[np.argmin(d)], a[np.argmax(s)], a[np.argmax(d)]])
+    f, t = px(found), px(truth)
+    side = max(np.linalg.norm(t[i] - t[(i + 1) % 4]) for i in range(4))
+    return bool(np.linalg.norm(f - t, axis=1).max() <= side / 8 / 4)
+
+
+def photo_folder(folder: Path, use_corners: bool):
+    """Photos named <placement>[__w|b__...].ext (ranks separated by '-');
+    'b' means Black is nearer the camera. Optional corners.json sidecar."""
+    sidecar = folder / "corners.json"
+    corners = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+    items = []
+    for p in sorted(folder.iterdir()):
+        if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+            continue
+        m = re.match(r"^([rnbqkpRNBQKP1-8]+(?:-[rnbqkpRNBQKP1-8]+){7})(?:__([wb])__)?", p.name)
+        if not m:
+            continue
+        truth = fen_to_grid(m.group(1).replace("-", "/"))
+        if truth is None:
+            continue
+        orientation = "black" if m.group(2) == "b" else "white"
+        items.append((p, truth, orientation, corners.get(p.name), use_corners and p.name in corners))
+    return items
 
 
 def variant(items, tmp: Path, kind: str):
@@ -214,7 +264,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", type=Path, help="write all metrics here")
     ap.add_argument("--skip-train", action="store_true")
+    ap.add_argument("--photos", type=Path,
+                    help="score this folder instead (see bench/chessred_prepare.py)")
+    ap.add_argument("--use-corners", action="store_true",
+                    help="with --photos: give the true board corners (scores piece reading alone)")
     args = ap.parse_args()
+
+    if args.photos:
+        items = photo_folder(args.photos, args.use_corners)
+        print(f"{len(items)} labelled photos in {args.photos}")
+        out = evaluate(items, args.photos.name + (" +corners" if args.use_corners else ""))
+        if args.json and out:
+            args.json.write_text(json.dumps(out, indent=2, default=str))
+        return
 
     backend = vision._get_default_backend()
     print(f"backend={type(backend).__name__} model={getattr(backend, 'model_path', '-')}")

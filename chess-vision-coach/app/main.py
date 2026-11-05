@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from app import engine
 from app.session import COOKIE_NAME, store
 from chess_vision import render, vision
+from chess_vision.sanity import material_problems
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -208,7 +209,8 @@ def fen_problem(fen: str | None) -> str | None:
         return f"The FEN is malformed: {exc}"
 
     status = board.status()
-    if status == chess.STATUS_VALID:
+    impossible = material_problems(fen.split()[0])
+    if status == chess.STATUS_VALID and not impossible:
         return None
 
     checks = [
@@ -223,7 +225,7 @@ def fen_problem(fen: str | None) -> str | None:
         (chess.STATUS_TOO_MANY_BLACK_PAWNS, "too many black pawns"),
         (chess.STATUS_OPPOSITE_CHECK, "the side not to move is in check"),
     ]
-    found = [msg for flag, msg in checks if status & flag]
+    found = [msg for flag, msg in checks if status & flag] + impossible
     if not found:
         found = ["the position is illegal"]
     return "Invalid position: " + "; ".join(found) + "."
