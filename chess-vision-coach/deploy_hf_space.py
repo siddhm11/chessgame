@@ -46,6 +46,19 @@ INCLUDE = [
 SPACE_README = "SPACE_README.md"      # uploaded as README.md (Space config)
 APP_PORT = 8000
 
+NEEDS_PAID_PLAN = """\
+Hugging Face only lets paid accounts create Docker Spaces ("Gradio and Docker
+Spaces run on compute and require a paid plan to create: PRO for personal
+accounts" -- https://huggingface.co/docs/hub/spaces-overview). The account
+'{user}' is not PRO, so the Space can't be created.
+
+Options:
+  1. Subscribe to HF PRO (https://huggingface.co/pro), then re-run this
+     command. The Space itself runs on free "CPU Basic" hardware.
+  2. Host the same Docker image elsewhere -- see DEPLOY_HF_SPACE.md,
+     "Other hosts".
+"""
+
 
 def collect_files(root: Path = ROOT) -> list[Path]:
     """Relative paths of every file to upload (README excluded)."""
@@ -128,8 +141,27 @@ def main(argv: list[str] | None = None) -> int:
             print("huggingface_hub is not installed: pip install huggingface_hub", file=sys.stderr)
             return 1
         api = HfApi(token=get_token(args.token))
-        api.create_repo(args.space, repo_type="space", space_sdk="docker",
-                        private=args.private, exist_ok=True)
+        if not api.repo_exists(args.space, repo_type="space"):
+            # Hugging Face: "Gradio and Docker Spaces run on compute and
+            # require a paid plan to create: PRO for personal accounts."
+            # (hub docs, Spaces Overview). Say so up front instead of failing
+            # later with a permission error that looks like a bad token.
+            me = api.whoami()
+            orgs = {o.get("name") for o in me.get("orgs", [])}
+            owner = args.space.split("/")[0]
+            if owner == me.get("name") and not me.get("isPro"):
+                print(NEEDS_PAID_PLAN.format(user=owner), file=sys.stderr)
+                return 2
+            if owner != me.get("name") and owner not in orgs:
+                print(f"You ({me.get('name')}) can't create Spaces under '{owner}'.", file=sys.stderr)
+                return 2
+            try:
+                api.create_repo(args.space, repo_type="space", space_sdk="docker",
+                                private=args.private)
+            except Exception as exc:   # e.g. 402/403 for an org without a paid plan
+                print(f"Hugging Face refused to create the Space: {exc}\n\n"
+                      + NEEDS_PAID_PLAN.format(user=owner), file=sys.stderr)
+                return 2
         api.upload_folder(
             folder_path=tmp, repo_id=args.space, repo_type="space",
             commit_message="Deploy Chess Vision Coach",

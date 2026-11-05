@@ -64,3 +64,55 @@ def test_dry_run_uploads_nothing(capsys):
 def test_rejects_malformed_space_id():
     with pytest.raises(SystemExit):
         d.main(["--space", "no-slash-here", "--dry-run"])
+
+
+class _FakeApi:
+    """Stands in for huggingface_hub.HfApi (not an app dependency)."""
+    calls: list = []
+
+    def __init__(self, token=None, exists=False, pro=False):
+        self._exists, self._pro = exists, pro
+
+    def repo_exists(self, repo_id, repo_type=None):
+        return self._exists
+
+    def whoami(self):
+        return {"name": "siddhm11", "isPro": self._pro, "orgs": []}
+
+    def create_repo(self, *a, **k):
+        _FakeApi.calls.append(("create_repo", a, k))
+
+    def upload_folder(self, **k):
+        _FakeApi.calls.append(("upload_folder", (), k))
+
+
+def _fake_hub(monkeypatch, **state):
+    import sys, types
+    mod = types.ModuleType("huggingface_hub")
+    mod.HfApi = lambda token=None: _FakeApi(token, **state)
+    mod.get_token = lambda: "hf_test"
+    monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
+    _FakeApi.calls = []
+
+
+def test_free_account_gets_a_clear_paid_plan_message(monkeypatch, capsys):
+    _fake_hub(monkeypatch, exists=False, pro=False)
+    assert d.main(["--space", "siddhm11/chess-vision-coach", "--token", "x"]) == 2
+    err = capsys.readouterr().err
+    assert "require a paid plan" in err and "PRO" in err
+    assert _FakeApi.calls == [], "nothing created or uploaded"
+
+
+def test_pro_account_creates_then_uploads_mirror(monkeypatch):
+    _fake_hub(monkeypatch, exists=False, pro=True)
+    assert d.main(["--space", "siddhm11/chess-vision-coach", "--token", "x"]) == 0
+    kinds = [c[0] for c in _FakeApi.calls]
+    assert kinds == ["create_repo", "upload_folder"]
+    assert _FakeApi.calls[0][2]["space_sdk"] == "docker"
+    assert _FakeApi.calls[1][2]["delete_patterns"] == "*"
+
+
+def test_existing_space_is_updated_without_creating(monkeypatch):
+    _fake_hub(monkeypatch, exists=True, pro=False)
+    assert d.main(["--space", "siddhm11/chess-vision-coach", "--token", "x"]) == 0
+    assert [c[0] for c in _FakeApi.calls] == ["upload_folder"]

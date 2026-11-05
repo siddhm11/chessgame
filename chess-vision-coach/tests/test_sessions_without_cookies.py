@@ -24,11 +24,13 @@ def _cookieless():
     return c
 
 
-def test_index_page_embeds_its_session_header():
+def test_index_page_embeds_a_session_header_without_allocating():
+    """GET / hands the page an id but stores nothing: only an upload creates
+    a session, so crawlers and link previews can't evict real users."""
     page = TestClient(app).get("/").text
     m = re.search(r"hx-headers='\{\"X-CVC-Session\": \"([0-9a-f]{32})\"\}'", page)
     assert m, "body must carry hx-headers with the session id"
-    assert store.get(m.group(1)) is not None
+    assert store.get(m.group(1)) is None
 
 
 def test_whole_flow_with_header_only_no_cookies():
@@ -55,7 +57,6 @@ def test_unknown_but_wellformed_id_is_adopted_after_restart():
     assert store.get(sid) is None
     c = _cookieless()
     c.get("/", headers={SESSION_HEADER: sid})
-    assert store.get(sid) is not None
     with open(FIXTURES / "starting.png", "rb") as fh:
         c.post("/analyze", files={"image": ("s.png", fh, "image/png")},
                data={"orientation": "white", "side_to_move": "white"},

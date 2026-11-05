@@ -11,6 +11,7 @@ For multi-user or multi-process deployment this would need Redis or similar.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import uuid
@@ -43,15 +44,22 @@ class Session:
     board_corners: list | None = None
     # True once the user dragged the corners; re-analyses then reuse them.
     corners_by_user: bool = False
+    # Settings of the analysis currently shown; an identical re-analysis is free.
+    analysis_key: str | None = None
+    # An analysis for this session is running; a second one is refused.
+    analyzing: bool = False
     # Monotonic time of the most recent /best-move call; used to throttle.
     last_engine_request: float = 0.0
 
 
 class SessionStore:
-    def __init__(self, max_sessions: int = 256) -> None:
+    def __init__(self, max_sessions: int = 4096) -> None:
+        # A session is a few hundred bytes (its photo lives on disk), so the
+        # cap is about abuse, not memory. Only uploads create sessions.
         self._data: "OrderedDict[str, Session]" = OrderedDict()
         self._lock = threading.Lock()
         self._max = max_sessions
+        self.on_evict = None   # callback(session) -- e.g. delete its photo
 
     def create(self, sid: str | None = None) -> tuple[str, Session]:
         sid = sid or uuid.uuid4().hex
@@ -84,7 +92,12 @@ class SessionStore:
 
     def _evict(self) -> None:
         while len(self._data) > self._max:
-            self._data.popitem(last=False)
+            _, gone = self._data.popitem(last=False)
+            if self.on_evict is not None:
+                try:
+                    self.on_evict(gone)
+                except Exception:
+                    pass
 
 
-store = SessionStore()
+store = SessionStore(int(os.environ.get("CVC_MAX_SESSIONS", "4096")))

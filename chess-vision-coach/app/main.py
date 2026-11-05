@@ -37,7 +37,11 @@ STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+# High-resolution phone JPEGs (50-108 MP modes) can exceed 10 MB; JPEGs decode
+# at reduced scale, so accepting them is cheap. Enforced before the body is
+# read (LimitRequestBody below), not after buffering it.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+_BODY_SLACK = 256 * 1024             # multipart framing + the small form fields
 BOARD_SIZE = 480
 # Uploads older than this are deleted by the background cleanup task.
 _UPLOAD_MAX_AGE_HOURS = 24
@@ -70,10 +74,95 @@ ENGINE_MIN_INTERVAL_S = 0.6
 # event loop and every other endpoint stay responsive).
 VISION_CONCURRENCY = max(1, int(os.environ.get("CVC_VISION_CONCURRENCY", "1")))
 _vision_slots = asyncio.Semaphore(VISION_CONCURRENCY)
+# Bounded waits: under overload, answer "busy" instead of queueing forever.
+VISION_QUEUE_TIMEOUT_S = 30.0
+
+# Stockfish searches allowed at once, across ALL users. The per-session
+# throttle alone was not enough: sessions are free, so 60 sessions ran 40
+# concurrent searches and stalled every other request (audit, measured).
+ENGINE_CONCURRENCY = max(1, int(os.environ.get("CVC_ENGINE_CONCURRENCY", "1")))
+_engine_slots = asyncio.Semaphore(ENGINE_CONCURRENCY)
+ENGINE_QUEUE_TIMEOUT_S = 8.0
+
+
+async def _acquire(sem: asyncio.Semaphore, timeout: float) -> bool:
+    """Acquire `sem` within `timeout` seconds; False if the server is too busy."""
+    try:
+        async with asyncio.timeout(timeout):
+            await sem.acquire()
+        return True
+    except TimeoutError:
+        return False
+
 
 app = FastAPI(title="Chess Vision Coach")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+class LimitRequestBody:
+    """Refuse request bodies over `max_bytes` BEFORE they are read.
+
+    Without this, a 1.5 GB POST was fully buffered (server RSS 85 MB ->
+    1.66 GB) before the app's size check ran; a few at once would get the
+    container OOM-killed (audit, measured). Declared sizes (Content-Length,
+    which browsers always send for uploads) are refused up front; chunked
+    bodies are counted and cut off at the limit.
+    """
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                too_big = int(declared) > self.max_bytes
+            except ValueError:
+                too_big = True
+            if too_big:
+                await self._refuse(scope, headers, send)
+                return
+        seen = 0
+
+        async def counted_receive():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > self.max_bytes:
+                    raise _BodyTooLarge()
+            return message
+
+        await self.app(scope, counted_receive, send)
+
+    async def _refuse(self, scope, headers, send):
+        mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        if scope.get("path") == "/analyze" and headers.get(b"hx-request"):
+            # htmx only swaps 2xx responses: answer with the upload form and
+            # a readable message rather than a status code nobody sees.
+            body = templates.get_template("_upload.html").render(
+                error=f"That photo is larger than {mb} MB. Please upload a smaller one."
+            ).encode()
+            status, ctype = 200, b"text/html; charset=utf-8"
+        else:
+            body, status, ctype = f"Request body over {mb} MB".encode(), 413, b"text/plain"
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", ctype),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(LimitRequestBody, max_bytes=MAX_UPLOAD_BYTES + _BODY_SLACK)
 
 
 def _cleanup_old_uploads() -> None:
@@ -99,6 +188,8 @@ def _start_cleanup_thread() -> None:
 
 
 _start_cleanup_thread()
+# An evicted session's photo is deleted right away (not 24 h later).
+store.on_evict = lambda s: _discard_upload(s.upload_name)
 
 
 # --------------------------------------------------------------------------
@@ -178,9 +269,32 @@ def board_view(session, *, arrows: list | None = None) -> dict:
 SESSION_HEADER = "X-CVC-Session"
 
 
+def _request_sid(request: Request) -> str | None:
+    return request.headers.get(SESSION_HEADER) or request.cookies.get(COOKIE_NAME)
+
+
 def _session_from_request(request: Request):
-    sid = request.headers.get(SESSION_HEADER) or request.cookies.get(COOKIE_NAME)
-    return store.get_or_create(sid)
+    return store.get_or_create(_request_sid(request))
+
+
+def _existing_session(request: Request):
+    """(sid, session) if the request names a live session, else (sid, None).
+    Never allocates: crawlers, link previews and expired pages must not be
+    able to evict real users' sessions from the bounded store."""
+    sid = _request_sid(request)
+    return sid, store.get(sid)
+
+
+def _session_expired(request: Request) -> Response:
+    """The page refers to a session the server no longer has (it restarted,
+    slept, or evicted it). Replace the whole app view with the upload form
+    and say why -- instead of a broken board or a made-up position."""
+    resp = templates.TemplateResponse(request, "_upload.html", {
+        "error": "This page's session has expired (the app restarted or was idle "
+                 "for a while). Please upload your photo again."})
+    resp.headers["HX-Retarget"] = "#app"
+    resp.headers["HX-Reswap"] = "innerHTML"
+    return resp
 
 
 def _with_cookie(response: Response, sid: str) -> Response:
@@ -291,7 +405,11 @@ def photo(token: str) -> Response:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> Response:
-    sid, _session = _session_from_request(request)
+    # Hand the page an id but don't store a session yet: it is created on
+    # the first upload. 256 bare GETs used to evict every real user.
+    sid, session = _existing_session(request)
+    if session is None:
+        sid = uuid.uuid4().hex
     response = templates.TemplateResponse(
         request, "index.html", {"error": None, "session_id": sid,
                                 "session_header": SESSION_HEADER})
@@ -323,11 +441,18 @@ async def analyze(
         )
         return _with_cookie(resp, sid)
 
+    if session.analyzing:
+        # This page already has an analysis in flight (double click, or a
+        # script): don't queue another. 204 = htmx leaves the page as is.
+        return Response(status_code=204)
+
+    new_upload = image is not None and bool(image.filename)
     # New upload, or re-analyze the previously uploaded image.
-    if image is not None and image.filename:
-        content = await image.read()
+    if new_upload:
+        content = await image.read(MAX_UPLOAD_BYTES + 1)
         if len(content) > MAX_UPLOAD_BYTES:
-            return upload_error("That image is larger than 10 MB. Please upload a smaller file.")
+            return upload_error(f"That photo is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. "
+                                "Please upload a smaller one.")
         if image.content_type and not image.content_type.startswith("image/"):
             return upload_error("That file is not an image. Please upload a JPG or PNG photo.")
 
@@ -335,8 +460,15 @@ async def analyze(
         # and record the rotation in EXIF) and size capped -- the same decoder
         # the pipeline uses for files. CPU-bound, so off the event loop:
         # running it inline would freeze every other user's requests.
-        async with _vision_slots:
+        if not await _acquire(_vision_slots, VISION_QUEUE_TIMEOUT_S):
+            return upload_error("The app is busy reading other photos right now -- "
+                                "please try again in a moment.")
+        try:
             decoded = await run_in_threadpool(vision.decode_image_bytes, content)
+        except vision.ImageTooLarge as exc:
+            return upload_error(str(exc))
+        finally:
+            _vision_slots.release()
         if decoded is None:
             return upload_error("That image could not be read -- it may be corrupt or not a real image.")
 
@@ -363,17 +495,33 @@ async def analyze(
             request, "_analyze.html",
             {**_analyze_context(request, session), "corner_error": corner_error})
         return _with_cookie(resp, sid)
-    if user_corners is None and session.corners_by_user and not (image is not None and image.filename):
+    if user_corners is None and session.corners_by_user and not new_upload:
         user_corners = session.board_corners   # orientation change etc.: keep the user's outline
+
+    # Same photo, same settings as the analysis on screen: nothing to redo.
+    key = json.dumps([session.upload_name, orientation, stm, user_corners])
+    if key == session.analysis_key and session.fen:
+        return _with_cookie(templates.TemplateResponse(
+            request, "_analyze.html", _analyze_context(request, session)), sid)
 
     # The vision pipeline is ~0.5 s of all-core CPU: run it off the event
     # loop (so other users' requests keep flowing) and behind the vision
     # admission limit (so concurrent uploads queue instead of thrashing).
-    async with _vision_slots:
-        result = await run_in_threadpool(
-            vision.analyze_image, str(image_path),
-            orientation=orientation, side_to_move=stm, corners=user_corners,
-        )
+    session.analyzing = True
+    try:
+        if not await _acquire(_vision_slots, VISION_QUEUE_TIMEOUT_S):
+            return upload_error("The app is busy reading other photos right now -- "
+                                "please try again in a moment.")
+        try:
+            result = await run_in_threadpool(
+                vision.analyze_image, str(image_path),
+                orientation=orientation, side_to_move=stm, corners=user_corners,
+            )
+        finally:
+            _vision_slots.release()
+    finally:
+        session.analyzing = False
+    session.analysis_key = key
     session.fen = result.fen
     session.orientation = orientation
     session.side_to_move = side_to_move
@@ -396,12 +544,9 @@ def correct(
     square: str = Form(...),
     piece: str = Form(...),
 ) -> Response:
-    sid, session = _session_from_request(request)
-    if not session.fen:
-        resp = templates.TemplateResponse(
-            request, "_analyze.html", _analyze_context(request, session)
-        )
-        return _with_cookie(resp, sid)
+    sid, session = _existing_session(request)
+    if session is None or not session.fen:
+        return _session_expired(request)
 
     parts = session.fen.split()
     try:
@@ -432,8 +577,10 @@ def correct(
 
 
 @app.post("/best-move", response_class=HTMLResponse)
-def best_move(request: Request, level: str = Form("normal")) -> Response:
-    sid, session = _session_from_request(request)
+async def best_move(request: Request, level: str = Form("normal")) -> Response:
+    sid, session = _existing_session(request)
+    if session is None or not session.fen:
+        return _session_expired(request)
     depth, time_limit = ENGINE_LEVELS.get(level, ENGINE_LEVELS["normal"])
 
     def panel(*, result=None, error=None, arrows=None) -> Response:
@@ -441,9 +588,6 @@ def best_move(request: Request, level: str = Form("normal")) -> Response:
         ctx.update(board_view(session, arrows=arrows))
         resp = templates.TemplateResponse(request, "_bestmove.html", ctx)
         return _with_cookie(resp, sid)
-
-    if not session.fen:
-        return panel(error="Analyze a photo before asking for the best move.")
 
     now = time.monotonic()
     wait = ENGINE_MIN_INTERVAL_S - (now - session.last_engine_request)
@@ -455,13 +599,18 @@ def best_move(request: Request, level: str = Form("normal")) -> Response:
     if problem:
         return panel(error=problem)
 
+    if not await _acquire(_engine_slots, ENGINE_QUEUE_TIMEOUT_S):
+        return panel(error="Stockfish is busy with other people's positions -- "
+                           "try again in a few seconds.")
     try:
-        result = engine.analyse(
-            session.fen, depth=depth, time_limit=time_limit,
+        result = await run_in_threadpool(
+            engine.analyse, session.fen, depth=depth, time_limit=time_limit,
             multipv=3, timeout=6.0,
         )
     except engine.EngineError as exc:
         return panel(error=str(exc))
+    finally:
+        _engine_slots.release()
 
     arrows = []
     if result.best_move_uci:
@@ -474,7 +623,9 @@ def best_move(request: Request, level: str = Form("normal")) -> Response:
 @app.post("/play-move", response_class=HTMLResponse)
 def play_move(request: Request, move: str = Form(...)) -> Response:
     """Apply a UCI move (e.g. the engine's suggestion) to the position."""
-    sid, session = _session_from_request(request)
+    sid, session = _existing_session(request)
+    if session is None or not session.fen:
+        return _session_expired(request)
     if session.fen:
         try:
             board = chess.Board(session.fen)
@@ -501,8 +652,11 @@ def play_move(request: Request, move: str = Form(...)) -> Response:
 
 @app.get("/download-fen", response_class=PlainTextResponse)
 def download_fen(request: Request) -> Response:
-    _sid, session = _session_from_request(request)
-    fen = session.fen or vision.STARTING_PLACEMENT + " w - - 0 1"
+    _sid, session = _existing_session(request)
+    if session is None or not session.fen:
+        # Never invent a position (it used to answer with the start position).
+        return PlainTextResponse("No position: analyze a photo first.", status_code=404)
+    fen = session.fen
     return PlainTextResponse(
         fen,
         headers={"Content-Disposition": 'attachment; filename="position.fen"'},

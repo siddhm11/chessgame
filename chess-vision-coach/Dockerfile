@@ -1,15 +1,18 @@
-FROM python:3.11-slim
+# Pinned by digest: an unpinned python:3.11-slim moved to Debian 13 (trixie),
+# where one of the old apt packages no longer exists and the build failed.
+# This digest is python:3.11-slim-bookworm (Debian 12).
+FROM python:3.11-slim-bookworm@sha256:94a8fee35252d06ab75856f15f12c7bae67b10e8a6da93c7fded82b2610926cd
 
-# System deps: OpenCV headless needs libGL, Pillow/CairoSVG need Cairo + fonts.
+# System packages, and only these: Stockfish, and Cairo (CairoSVG renders
+# board images). The Python wheels (OpenCV, onnxruntime, Pillow, numpy) bundle
+# their own native libraries -- checked with ldd: they need only libc,
+# libstdc++, libgcc and zlib, which the base image already has.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libglib2.0-0 \
         libcairo2 \
-        libpango-1.0-0 \
-        libpangocairo-1.0-0 \
-        libgdk-pixbuf2.0-0 \
-        libffi-dev \
         stockfish \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1
 
 # Hugging Face Spaces runs the container as a non-root user (UID 1000).
 # Create that user and a writable HOME so Ultralytics / matplotlib /

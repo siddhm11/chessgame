@@ -51,7 +51,7 @@ import numpy as np
 
 from chess_vision.sanity import sanitize
 from chess_vision.vision import (
-    NO_BOARD_FIT, BackendOutput, ClassicalBackend, no_board_output, normalise_quad,
+    NO_BOARD_FIT, THREADS, BackendOutput, ClassicalBackend, no_board_output, normalise_quad,
 )
 
 # Canonical piece name -> FEN symbol (covers both model naming conventions).
@@ -160,8 +160,13 @@ class ModelBackend:
         # Build into a local and publish self._session LAST: _load's unlocked
         # fast path treats a non-None session as "fully configured", so the
         # input size and class map must already be set when it appears.
+        # Thread pool sized to the CPUs the container really gets (cgroup
+        # quota), not every core of the host machine.
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = THREADS
+        opts.inter_op_num_threads = 1
         session = ort.InferenceSession(
-            str(self.model_path), providers=["CPUExecutionProvider"]
+            str(self.model_path), sess_options=opts, providers=["CPUExecutionProvider"]
         )
         self._input_name = session.get_inputs()[0].name
 

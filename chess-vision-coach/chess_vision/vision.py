@@ -30,8 +30,10 @@ and perspective correction are general-purpose; piece-type matching is not.
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
@@ -56,6 +58,51 @@ CONF_THRESHOLD = 0.5
 # ordinary non-chess photos 0.48-0.63; 0.68 is the midpoint of that gap).
 # Never applied when the user marked the board's corners themselves.
 NO_BOARD_FIT = 0.68
+
+# Pixel budgets, checked from the image header BEFORE decoding. A 1 MB PNG
+# can declare 32768x32768 pixels; decoding it peaked at 6.2 GB RSS (audit,
+# measured). JPEGs are decoded at reduced scale (draft mode), so very large
+# phone photos stay cheap; other formats decode at full size.
+MAX_PIXELS_JPEG = 250_000_000
+MAX_PIXELS_OTHER = 40_000_000
+
+
+class ImageTooLarge(ValueError):
+    """The image declares more pixels than we will decode."""
+
+
+def effective_cpus() -> int:
+    """CPUs this process may actually use: CVC_THREADS if set, else the
+    cgroup CPU quota (a 2-vCPU container on a 16-core host must not size its
+    thread pools to 16 -- ~4x slower, audit-measured), else affinity/count."""
+    env = os.environ.get("CVC_THREADS")
+    if env and env.isdigit() and int(env) > 0:
+        return int(env)
+    n = os.cpu_count() or 1
+    try:
+        n = min(n, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    quota = None
+    try:  # cgroup v2
+        q, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if q != "max":
+            quota = int(q) / int(period)
+    except (OSError, ValueError):
+        try:  # cgroup v1
+            q = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+            period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+            if q > 0:
+                quota = q / period
+        except (OSError, ValueError):
+            pass
+    if quota:
+        n = min(n, max(1, math.ceil(quota)))
+    return max(1, n)
+
+
+THREADS = effective_cpus()
+cv2.setNumThreads(THREADS)
 
 # Longest side images are processed at. 24 MP phone/DSLR photos are decoded
 # straight to ~this size; the board crop still gets 2-3x the 640px it needs.
@@ -847,7 +894,7 @@ def _load_bgr(source) -> np.ndarray:
             raise FileNotFoundError(f"image not found: {source}")
         img = _decode_upright(path)
         if img is None:
-            img = cv2.imread(str(path), cv2.IMREAD_COLOR)  # formats PIL can't read
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)  # local files PIL can't read
     if img is None:
         raise ValueError(f"could not decode image: {source}")
     return _normalise(img)
@@ -855,12 +902,15 @@ def _load_bgr(source) -> np.ndarray:
 
 def decode_image_bytes(data: bytes) -> np.ndarray | None:
     """Decode uploaded bytes exactly as `_load_bgr` decodes a file: EXIF
-    orientation applied, size capped at MAX_WORK_SIDE. None if undecodable."""
+    orientation applied, size capped at MAX_WORK_SIDE. None if undecodable;
+    raises ImageTooLarge past the pixel budget.
+
+    Deliberately no OpenCV fallback for uploads: cv2.imdecode has no size
+    guard, so it would decode the very bombs Pillow refuses.
+    """
     from io import BytesIO
 
     img = _decode_upright(BytesIO(data))
-    if img is None:
-        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     return None if img is None else _normalise(img)
 
 
@@ -871,12 +921,29 @@ def _decode_upright(fp) -> np.ndarray | None:
     crop needs. Returns BGR, or None if Pillow can't read it."""
     from PIL import Image, ImageOps  # local: only the loaders need PIL
 
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS_JPEG   # our own budget check is below
     try:
-        with Image.open(fp) as pil_img:
+        with warnings.catch_warnings():
+            # Pillow warns while reading an oversized header; the size is
+            # handled (and refused) explicitly just below.
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            pil_img = Image.open(fp)
+        with pil_img:
+            w, h = pil_img.size                  # header only: nothing decoded yet
+            limit = MAX_PIXELS_JPEG if pil_img.format == "JPEG" else MAX_PIXELS_OTHER
+            if w * h > limit:
+                raise ImageTooLarge(
+                    f"That image is too large to process ({w}x{h} pixels). "
+                    "Please upload a normal camera photo.")
             pil_img.draft("RGB", (MAX_WORK_SIDE, MAX_WORK_SIDE))
             pil_img = ImageOps.exif_transpose(pil_img)
             rgb = np.asarray(pil_img.convert("RGB"))
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except ImageTooLarge:
+        raise
+    except Image.DecompressionBombError as exc:
+        raise ImageTooLarge("That image is too large to process. "
+                            "Please upload a normal camera photo.") from exc
     except Exception:
         return None
 

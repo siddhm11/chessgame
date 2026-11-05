@@ -62,14 +62,36 @@ def test_analyze_rejects_corrupt_image():
 
 
 def test_analyze_rejects_oversized_image():
-    big = b"\x89PNG" + b"0" * (10 * 1024 * 1024 + 16)
+    """Refused from the declared size, before the body is read; htmx gets a
+    readable message (it only swaps 2xx), other clients a 413."""
+    from app.main import MAX_UPLOAD_BYTES
+    big = b"\x89PNG" + b"0" * (MAX_UPLOAD_BYTES + 300 * 1024)
     resp = _client().post(
         "/analyze",
         files={"image": ("big.png", big, "image/png")},
         data={"orientation": "white", "side_to_move": "white"},
+        headers={"HX-Request": "true"},
     )
     assert resp.status_code == 200
-    assert "10 MB" in resp.text
+    assert "larger than 25 MB" in resp.text
+    resp = _client().post("/analyze", files={"image": ("big.png", big, "image/png")})
+    assert resp.status_code == 413
+
+
+def test_analyze_rejects_image_bomb():
+    """A small file declaring a huge pixel count is refused from its header;
+    it must not reach a decoder (a 1 MB PNG bomb used to decode to 6 GB)."""
+    import struct, zlib
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    w = h = 20000                                            # 400 MP, header only
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"\0" * 1000)) + chunk(b"IEND", b""))
+    resp = _client().post(
+        "/analyze", files={"image": ("bomb.png", png, "image/png")},
+        data={"orientation": "white", "side_to_move": "white"})
+    assert resp.status_code == 200
+    assert "too large to process" in resp.text
 
 
 def test_correct_updates_fen():
@@ -90,10 +112,13 @@ def test_correct_to_illegal_position_warns():
     assert "no white king" in resp.text
 
 
-def test_best_move_before_analyze_is_friendly():
+def test_best_move_without_a_session_asks_to_reupload():
+    """No live session (never uploaded, or the server restarted): replace the
+    whole view with the upload form and say why -- never a made-up board."""
     resp = _client().post("/best-move")
     assert resp.status_code == 200
-    assert "Analyze a photo" in resp.text
+    assert "upload your photo again" in resp.text
+    assert resp.headers.get("HX-Retarget") == "#app"
 
 
 @pytest.mark.skipif(
