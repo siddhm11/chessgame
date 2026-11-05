@@ -2,30 +2,22 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** grid refinement, board-doubt gate, concurrency fixes, full evaluation  
-**Tests:** 98 passing  
-**Status:** fully functional and deploy-ready. **Read `bench/RESULTS.md` first** —
-every claim there comes from a re-runnable script.
+**Last commit:** sideways-photo tiebreak, reload keeps your board  
+**Tests:** 172 passing (CI green on every push)  
+**Status:** feature-complete for its trained board style; NOT yet general.
+**Read `bench/RESULTS.md` and `README.md` first.**
 
-- Accuracy, 636 analyses on real labeled photos, 0 crashes: **99.77%** per-square
-  on the 68 held-out photos, **99.33%** on 44 harder never-trained-on photos
-  (was 86.0%), 99.72% with EXIF rotation, 99.77% at 55% brightness. About
-  1 *silent* (untinted) wrong square per 25 boards.
-- HTTP soak test (128 full user flows, 4 concurrent users): 0 errors, 0
-  cross-session leaks, flat memory (~315 MB).
-- Honest limit: all labeled photos are one board style shot from overhead.
-  Other boards / angled shots are **unmeasured** — the most valuable next step
-  is a labeled photo set of a different board.
-
-Earlier features still in place: CI on push, /best-move rate limit, graceful
-fallback to classical when the .onnx is absent, EXIF-upright uploads, HF Space
-artifacts (SPACE_README.md + DEPLOY_HF_SPACE.md, Dockerfile runs as UID 1000).
-
-Key mechanisms added in the latest round (see RESULTS.md for the measurements):
-`ClassicalBackend.find_board_scored` / `_refine_quad` / `_grid_fit` (snap crop
-onto the 8×8 grid), `ModelBackend._apply_board_doubt` (fit < 0.80 → whole
-board tinted + note), `/analyze` off the event loop behind
-`CVC_VISION_CONCURRENCY` (default 1), `MALLOC_ARENA_MAX=2` in Docker/run.sh.
+- Familiar board/pieces: 99.8% per square on held-out photos (636 analyses).
+- Other piece sets: the model fails (37/64 and 30/64 wrong on two photos);
+  the app flags those reads (impossible-material rule) instead of showing
+  them as trusted. Fix = training data from more sets (ChessReD; its host
+  is blocked from the build environment; `bench/chessred_prepare.py` ready).
+- Product: drag-the-corners board fix, non-chessboard rejection, works
+  inside a Hugging Face Space iframe, public-deployment safeguards (body
+  limit, image bombs, global engine/vision limits, session handling).
+- Deploy: `deploy_hf_space.py` -- but HF requires a PRO account to create
+  Docker Spaces. Dockerfile pinned (Debian 12 digest), never built here
+  (no Docker daemon). Bundle smoke-tested from an empty folder.
 
 ---
 

@@ -412,9 +412,11 @@ def index(request: Request) -> Response:
     sid, session = _existing_session(request)
     if session is None:
         sid = uuid.uuid4().hex
-    response = templates.TemplateResponse(
-        request, "index.html", {"error": None, "session_id": sid,
-                                "session_header": SESSION_HEADER})
+    ctx = {"error": None, "session_id": sid, "session_header": SESSION_HEADER}
+    if session is not None and session.fen and session.upload_name:
+        # Reloading the page shows your board again instead of a blank form.
+        ctx.update(_analyze_context(request, session))
+    response = templates.TemplateResponse(request, "index.html", ctx)
     return _with_cookie(response, sid)
 
 

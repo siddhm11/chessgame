@@ -240,3 +240,17 @@ def test_best_move_is_rate_limited(monkeypatch):
     second = client.post("/best-move")
     assert second.status_code == 200
     assert "Slow down" in second.text
+
+
+def test_reload_shows_your_board_not_a_blank_form():
+    client = _client()
+    _upload_starting(client)
+    client.post("/correct", data={"square": "e2", "piece": "empty"})
+    page = client.get("/").text
+    assert "rnbqkbnr/pppppppp/8/8/8/8/PPPP1PPP/RNBQKBNR" in page    # the corrected board
+    assert 'id="photo-wrap"' in page
+    assert 'hx-headers=' in page                                     # same session continues
+
+
+def test_first_visit_still_shows_the_upload_form():
+    assert 'name="image"' in _client().get("/").text

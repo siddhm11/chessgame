@@ -1,2 +1,2 @@
 {% extends "base.html" %}
-{% block app %}{% include "_upload.html" %}{% endblock %}
+{% block app %}{% if fen %}{% include "_analyze.html" %}{% else %}{% include "_upload.html" %}{% endif %}{% endblock %}
