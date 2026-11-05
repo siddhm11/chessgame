@@ -25,6 +25,9 @@ class Session:
 
     fen: str | None = None
     original_image_url: str | None = None
+    # File name of this session's photo inside UPLOADS_DIR. Random, never
+    # derived from the session id, and only ever served back to this session.
+    upload_name: str | None = None
     orientation: str = "white"
     side_to_move: str = "w"
     detection_failed: bool = False

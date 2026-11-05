@@ -1,109 +1,77 @@
-# Deploy to Hugging Face Spaces
+# Deploy to Hugging Face Spaces (free)
 
-This deploys the app as a free public web service at
-`https://huggingface.co/spaces/<your-username>/chess-vision-coach`.
-Takes about 5 minutes; the actual click-through is 3 steps.
+Result: a public web app at `https://huggingface.co/spaces/<you>/chess-vision-coach`
+(HTTPS included, nothing to host). One command; ~5 minutes including the build.
 
-## What you get on the free tier
+## 1. Get a write token (once)
 
-- Public URL with HTTPS, no DNS or hosting to manage
-- 16 GB RAM, 2 vCPU, 50 GB disk — comfortably above what we need
-- Auto-sleeps after ~48 h of inactivity, auto-wakes on the next request
-  (cold-start: ~30 s while the model loads)
-- Stockfish-at-strong (depth 22) takes ~2 s/move on CPU; Fast and
-  Normal feel snappy
+<https://huggingface.co/settings/tokens> → **Create new token** → type **Write** → copy it.
 
-## Step 1 — create the Space (1 minute, in the browser)
+## 2. Deploy
 
-1. Open <https://huggingface.co/new-space> (logged in as `siddhm11`).
-2. **Owner:** your user. **Space name:** `chess-vision-coach`
-   (or anything you like — the URL will follow).
-3. **License:** AGPL-3.0
-4. **Select the SDK:** **Docker** → **Blank** template.
-5. Click **Create Space**.
-
-You now have an empty Space repo at
-`https://huggingface.co/spaces/siddhm11/chess-vision-coach`.
-
-## Step 2 — push the code (one shell snippet)
+In a terminal, inside the `chess-vision-coach` folder of an up-to-date clone
+of this branch (`git pull` first):
 
 ```bash
-# Clone the empty Space repo (HF gives you a username/password prompt;
-# the password is an HF access token from huggingface.co/settings/tokens).
-git clone https://huggingface.co/spaces/siddhm11/chess-vision-coach hf-space
-cd hf-space
+pip install huggingface_hub
 
-# Copy the app into the Space repo.
-# (Run this from the root of the chessgame repo, ADJUST path if you are
-# elsewhere.)
-cp -r ../chessgame/chess-vision-coach/. .
+# Optional: see exactly what will be uploaded (25 files, ~12 MB). Uploads nothing.
+python deploy_hf_space.py --space siddhm11/chess-vision-coach --dry-run
 
-# HF Spaces reads the front-matter YAML from README.md, not SPACE_README.md.
-mv SPACE_README.md README.md
-
-# Spaces does not auto-handle Git LFS for free; the 12 MB ONNX model is
-# under GitHub's 100 MB limit AND under HF's 10 GB Space limit, so a
-# plain commit is fine.
-git add .
-git commit -m "initial deploy"
-git push
+# Deploy. Creates the Space if needed; asks for the token (or set HF_TOKEN).
+python deploy_hf_space.py --space siddhm11/chess-vision-coach
 ```
 
-## Step 3 — wait for the build (~3 minutes)
+On Windows use `py` instead of `python` if `python` isn't found. Add
+`--private` to make the Space visible only to you.
 
-Open the Space URL in the browser; you'll see a build log. When the
-status flips to **Running** the app is live. Upload a chessboard photo
-and try it.
+## 3. Wait for the build
+
+Open the URL the script prints. The page shows the build log; after ~3–5
+minutes it switches to the app. Upload a chessboard photo to try it.
+
+**To update later:** pull the latest code and run the same command again. The
+Space is kept an exact mirror of the bundle and rebuilds automatically.
 
 ---
+
+## What gets uploaded, and why not `git push`
+
+`deploy_hf_space.py` uploads an explicit allowlist: the Dockerfile,
+`requirements.txt`, `app/`, `chess_vision/` (code + the one model the app
+uses), `templates/`, `static/`, and `SPACE_README.md` as the Space's
+`README.md` (its config). It never uploads `uploads/` (people's photos),
+`.venv/`, training data, tests, or the unused large models.
+
+A plain `git push` to the Space fails: Hugging Face rejects files over 10 MB
+sent that way, and the model is 12 MB. The upload API handles that.
+
+The exact bundle is smoke-tested by `bench/smoke_bundle.py`: it is installed
+into an empty folder with a fresh virtualenv, started the way the Dockerfile
+starts it, and run through upload → analyze → best move → play move.
+
+## Free tier: what to expect
+
+- 2 vCPU, 16 GB RAM. One photo takes ~0.6 s to read; several people uploading
+  at once queue up (a few seconds each), they don't fail.
+- Sleeps after ~48 h without visitors; the next visit wakes it (~30 s).
+- Uploaded photos live only in the running container: private to the
+  uploader's session, deleted after 24 h, and gone on restart.
 
 ## Troubleshooting
 
-**"Build failed: pip out of memory"** — extremely unlikely with 16 GB,
-but if it ever happens, edit `requirements.txt` to install onnxruntime
-separately with `--no-cache-dir`.
+- **401 / 403 from the script:** the token is read-only or for another
+  account. Create a **Write** token for the account that owns the Space.
+- **Build fails:** open the build log (the script prints the link). The
+  Dockerfile installs Stockfish with apt and the Python packages from
+  `requirements.txt`; a network hiccup there is fixed by re-running the
+  deploy (or "Factory reboot" in the Space settings).
+- **Stuck on "Starting":** the app must listen on port 8000 —
+  `SPACE_README.md` says `app_port: 8000` and the Dockerfile serves on 8000.
+  The script checks both before uploading.
 
-**"Permission denied writing to /app/uploads"** — fixed in the
-Dockerfile in this commit (runs as UID 1000 with explicit `chown`). If
-you see this in an older Space, redeploy.
+## License
 
-**"Stockfish: command not found"** — the Dockerfile installs it via
-apt. If the Space falls back to classical-only, check the build log for
-the apt step.
-
-**"App went to sleep"** — that's expected on the free tier after 48 h
-of no requests. The first request after sleep wakes the container; it
-costs you ~30 s of cold start while the ONNX session warms.
-
----
-
-## Updating the Space after a code change
-
-Once the GitHub repo is updated:
-
-```bash
-cd hf-space
-# Pull the latest code over.
-cp -r ../chessgame/chess-vision-coach/. .
-mv SPACE_README.md README.md  # only the YAML changes if you touched it
-git add .
-git commit -m "update from main repo"
-git push
-```
-
-The Space rebuilds automatically on push.
-
----
-
-## When to leave the free tier
-
-- **You hit the rate limit** — the `/best-move` endpoint is already
-  throttled per-session, but a Space with many concurrent users on
-  Strong depth would spend most of its CPU in Stockfish. Upgrade to
-  CPU upgrade tier (~$0.05/hr) or move Stockfish to a separate worker.
-- **You want persistent sessions across cold starts** — swap
-  `app/session.py` for Redis (the dataclass is clean; the store is
-  ~50 lines). HF Spaces does not provide managed Redis, so you'd point
-  at an Upstash / Redis Cloud free tier.
-- **You hit the 48 h sleep at an awkward time** — pay for a Space that
-  doesn't sleep, or hit it with a cron pinger.
+The model weights are Ultralytics YOLO derivatives (AGPL-3.0). Fine for
+personal / learning use; a commercial deployment needs an Ultralytics
+license or a different model.

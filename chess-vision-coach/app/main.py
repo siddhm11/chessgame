@@ -20,7 +20,7 @@ import numpy as np
 import cv2
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -70,7 +70,6 @@ _vision_slots = asyncio.Semaphore(VISION_CONCURRENCY)
 
 app = FastAPI(title="Chess Vision Coach")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
@@ -199,6 +198,32 @@ def _analyze_context(request: Request, session) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _discard_upload(name: str | None) -> None:
+    if name:
+        try:
+            (UPLOADS_DIR / name).unlink()
+        except OSError:
+            pass
+
+
+@app.get("/photo")
+def photo(request: Request) -> Response:
+    """The current session's uploaded photo -- and only that.
+
+    Uploads are not a public static folder: on a shared deployment anyone
+    could otherwise fetch other people's photos by URL.
+    """
+    session = store.get(request.cookies.get(COOKIE_NAME))
+    name = session.upload_name if session else None
+    path = UPLOADS_DIR / name if name else None
+    if path is None or not path.is_file():
+        return PlainTextResponse("Not found", status_code=404)
+    return FileResponse(
+        path, media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> Response:
     sid, _session = _session_from_request(request)
@@ -242,16 +267,18 @@ async def analyze(
 
         # Persist the upright, size-capped pixels so the thumbnail matches
         # what the pipeline analyses (and storage stays ~0.5 MB per photo).
-        fname = f"{sid}_{uuid.uuid4().hex[:8]}.jpg"
+        # The name is random and unrelated to the session id: it appears in
+        # page HTML, so it must not double as a session credential.
+        fname = f"{uuid.uuid4().hex}.jpg"
         await run_in_threadpool(
             cv2.imwrite, str(UPLOADS_DIR / fname), decoded,
             [cv2.IMWRITE_JPEG_QUALITY, 90],
         )
-        session.original_image_url = f"/uploads/{fname}"
+        _discard_upload(session.upload_name)   # a new photo replaces the old one
+        session.upload_name = fname
+        session.original_image_url = f"/photo?v={fname[:12]}"
 
-    image_path = None
-    if session.original_image_url:
-        image_path = UPLOADS_DIR / Path(session.original_image_url).name
+    image_path = UPLOADS_DIR / session.upload_name if session.upload_name else None
     if image_path is None or not image_path.exists():
         return upload_error("Please choose a chessboard photo to analyze.")
 

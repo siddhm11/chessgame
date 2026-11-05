@@ -1,0 +1,22 @@
+# Keep `docker build .` from this folder lean and private. (deploy_hf_space.py
+# uploads an explicit allowlist, so the Space never sees these anyway.)
+.venv/
+**/__pycache__/
+*.pyc
+uploads/
+finetune_data/
+runs/
+chess_finetune/
+debug_out/
+model-upload/
+test_photos/
+tests/
+bench/
+docs/
+*.ipynb
+# Only the default model ships; the others are fallbacks for local use.
+chess_vision/models/yolov8m-chess.onnx
+chess_vision/models/yolo11n-chess.onnx
+chess_vision/models/yolov8n-chess-finetuned.onnx
+.git
+.github
