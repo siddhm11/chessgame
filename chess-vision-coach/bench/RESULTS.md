@@ -86,12 +86,35 @@ Production bugs this test found, all now fixed:
   fragmentation (not a leak: non-monotonic, and gone with
   `MALLOC_ARENA_MAX=2`, now set in the Dockerfile and `run.sh`).
 
+## Other boards and piece sets — the real limit
+
+All labelled photos above show one board style. On the two photos of other
+sets available (`test_photos/`, iStock): a wooden Staunton set in the
+starting position read **37/64 squares wrong**; another midgame read
+**30/64 wrong** (occupancy and colour; I couldn't label its piece types
+reliably by eye). The model doesn't recognise those pieces.
+
+What the app does about it: a chess-rule check (extra queens/rooks/bishops/
+knights can't exceed 8 minus the pawns on the board — it fires on 0 of the
+500 real positions) tints the whole board and explains the piece set may be
+unfamiliar. Silent errors on both photos: **0**. The read is still wrong; it
+just no longer looks right.
+
+Fixing it needs training data from many sets. ChessReD (10,800 phone photos,
+another set, angled) is the obvious source, but its host is blocked from the
+build environment. `bench/chessred_prepare.py` + `full_eval.py --photos` score
+it in one command once downloaded elsewhere.
+
+## Is there a board at all? — `board_presence_eval.py`
+
+508 real board photos scored a grid fit of 0.732–1.01; 96 ordinary non-chess
+photos (OpenCV and scikit-image samples) 0.48–0.63. The cut-off 0.68 rejects
+all 96 and wrongly rejects 0 of 508 boards. Calibration checkerboards and
+empty checkerboards (hard negatives) can pass; they read as empty boards.
+
 ## Honest limits
 
-- **One photographer, one board style.** All labeled photos are overhead
-  shots of a green-and-white roll-up board with Staunton pieces. Accuracy on
-  other boards, piece sets, or angled phone shots is **not measured** — there
-  is no labeled data for them here. The 5 other photos only prove no crash.
+- **One board style.** See above: on other sets the reads are flagged but wrong.
 - **Overhead only.** Steep angles are not handled by the board finder.
 - **CPU-bound.** One 4-core box serves one analysis at a time; more users
   means more queueing, not failures.

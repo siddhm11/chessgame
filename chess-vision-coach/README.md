@@ -1,223 +1,130 @@
 # Chess Vision Coach
 
-Upload a photo of a physical chessboard. The app extracts the position to a
-FEN, lets you fix any misclassified pieces by clicking squares, and uses
-Stockfish to suggest the best move with an evaluation.
+Photograph a physical chessboard; get the position and the best move.
 
 ```
-photo  ->  board detection  ->  FEN  ->  your corrections  ->  Stockfish
+photo -> find the board -> read the pieces -> check against chess rules
+      -> you fix anything flagged -> Stockfish suggests the best move
 ```
 
----
+## What it does
 
-## Prerequisites
+1. **Upload a photo** (phone or camera, up to 25 MB).
+2. The app **finds the board** and outlines it on your photo. If the outline
+   is wrong, **drag its 4 corner dots** and press *Re-read board*.
+3. A fine-tuned **YOLO model reads every square**. Chess-rule checks repair
+   impossible reads (two white kings, pawns on the back rank, 11 queens).
+4. Squares the app is unsure of are **tinted amber/red**, with a note saying
+   why. **Click any square** to fix it.
+5. **Stockfish** gives the best move, an evaluation and the follow-up line;
+   one click plays the move.
 
-- **Python 3.10+** (developed and tested on 3.11)
-- **Stockfish** chess engine
-- A C library or two for image rendering (`libcairo`, `libpango`) — already
-  present on most desktop Linux and macOS installs.
+Photos that don't contain a chessboard are rejected instead of being read.
 
-### Install Stockfish
+## How accurate is it?
 
-| Platform | Command |
-|----------|---------|
-| **Linux (Debian/Ubuntu)** | `sudo apt-get install stockfish` |
-| **macOS** | `brew install stockfish` |
-| **Windows** | Download from <https://stockfishchess.org/download/> and either put it on your `PATH` or set `STOCKFISH_PATH` |
+Measured with `bench/full_eval.py` on 636 photo analyses with known positions
+(details and how to reproduce: [`bench/RESULTS.md`](bench/RESULTS.md)):
 
-The app auto-discovers Stockfish at `/usr/games/stockfish`, `/usr/bin`,
-`/usr/local/bin`, `/opt/homebrew/bin`, or anywhere on `PATH`. You can also
-point it explicitly:
+| photos | per-square accuracy |
+|---|---|
+| 68 held-out photos, same board/pieces as training | **99.8%** |
+| 44 harder held-out photos, same set | **99.3%** |
+| same, rotated via EXIF / darkened to 55% | 99.7% / 99.8% |
+
+**Important limit: other boards and piece sets.** The model was trained on
+one board style (green-and-white roll-up board, Staunton pieces, shot from
+above). On two photos of *other* sets it read 37/64 and 30/64 squares wrong.
+The app flags those reads (every wrong square tinted, plus a note), but it
+can't read them. Making it work on any set needs more varied training data;
+see *Next steps*.
+
+## Run it locally
+
+You need Python 3.10+ and [Stockfish](https://stockfishchess.org/download/).
+
+**Linux / macOS**
 
 ```bash
-export STOCKFISH_PATH=/full/path/to/stockfish
+./run.sh            # creates .venv, installs, checks Stockfish, starts on :8000
 ```
 
----
+**Windows (PowerShell)**
 
-## Quick start
-
-```bash
-./run.sh
-```
-
-`run.sh` checks your Python version, creates a `.venv`, installs dependencies,
-verifies Stockfish, and starts the server. Then open:
-
-**<http://localhost:8000>**
-
-To run it manually instead:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+$env:STOCKFISH_PATH = "C:\path\to\stockfish.exe"   # if it's not on PATH
 uvicorn app.main:app --port 8000 --workers 1
 ```
 
----
+Then open <http://localhost:8000>. Cairo is not needed to run the web app.
 
-## Usage
+Stockfish is found on `PATH`, at `/usr/games/stockfish`, `/usr/local/bin`,
+`/opt/homebrew/bin`, or wherever `STOCKFISH_PATH` points.
 
-### Web app
+## Deploy
 
-1. Open <http://localhost:8000>.
-2. Upload a chessboard photo. Choose **which side is closer to the camera**
-   and **whose move it is**.
-3. The parsed board appears next to your photo with an overall confidence
-   score. Squares the vision pass was unsure about are **tinted amber/red**
-   so you can see exactly what to check.
-4. **Click any square** to correct a misread piece (or empty it). The clicked
-   square is highlighted, and once you fix it the tint clears.
-5. Pick an engine **strength** (Fast / Normal / Strong) and click **Get best
-   move** — Stockfish returns the best move (drawn as an arrow), an
-   evaluation, the **principal-variation line** for each of the top 3
-   candidates, and a button to **play the suggested move on the board**.
-6. Copy or download the FEN at any time.
+`python deploy_hf_space.py --space <you>/chess-vision-coach` uploads exactly
+the 25 files the app needs to a Hugging Face Docker Space. **Hugging Face now
+requires a PRO account to create Docker Spaces**; the script checks this first.
+The Dockerfile works on any container host. See
+[`DEPLOY_HF_SPACE.md`](DEPLOY_HF_SPACE.md).
 
-### Command-line vision pipeline
+## Settings (environment variables)
 
-```bash
-python -m chess_vision.cli photo.jpg --orientation white --side-to-move white
-```
-
-Outputs the parsed FEN, a per-square confidence grid, and a side-by-side
-visualization (`output.png`: original photo | rendered board).
-
-### Vision backend — fine-tuned YOLO model (default) or classical
-
-Two interchangeable backends live behind the `VisionBackend` Protocol in
-`chess_vision/vision.py`:
-
-| Backend | What it does | When it shines |
+| variable | default | meaning |
 |---|---|---|
-| `model` (default via `run.sh`) | Fine-tuned **YOLOv8n** ONNX detector (98.8% per-square on held-out real photos) | Real-world boards, occluded pieces |
-| `classical` | Template-match each warped square against python-chess's own piece glyphs | Synthetic boards, lichess/chess.com diagrams (parses at ~100%) |
+| `CVC_BACKEND` | `model` | `model` (YOLO) or `classical` (template matching; rendered diagrams only) |
+| `CVC_VISION_CONCURRENCY` | 1 | photo analyses at once (each already uses every core) |
+| `CVC_ENGINE_CONCURRENCY` | 1 | Stockfish searches at once, across all users |
+| `CVC_THREADS` | CPU quota | threads for the model/OpenCV (default: the container's CPU limit) |
+| `CVC_MAX_SESSIONS` | 4096 | sessions kept in memory |
+| `STOCKFISH_PATH` | auto | Stockfish binary |
 
-Switch with `CVC_BACKEND=classical ./run.sh` for rendered diagrams. Three
-ONNX models are vendored in `chess_vision/models/`; `ModelBackend` prefers
-the fine-tuned one and auto-configures input size and class mapping from
-each model's metadata, so dropping in a new `.onnx` needs no code change.
-Models load lazily — no cost unless used. `onnxruntime` is in
-`requirements.txt`.
+Run **one** uvicorn worker: sessions live in process memory.
 
-**Chess-logic sanity layer** (`chess_vision/sanity.py`): the raw detector
-grid is checked against hard chess constraints — pawns on rank 1/8, more
-than one king per colour, a missing king, more than 8 pawns per colour.
-Violations are guaranteed misreads, so they are auto-repaired from the
-model's runner-up classes when possible (e.g. the classic king↔queen
-confusion) and confidence-flagged red in the UI when not, so a wrong
-square can never slip through silently.
+## Public-deployment safeguards
 
-> **License note:** the model weights are AGPL-3.0 (Ultralytics framework
-> license, regardless of the dataset; the fine-tune inherits it). Fine for
-> personal / learning use. For commercial use you'd need an Ultralytics
-> commercial license or a non-YOLO model.
+Uploads are size-checked before being read; image "bombs" are refused from
+their header; Stockfish and photo analysis are limited globally with "busy,
+try again" answers; photos are served only by an unguessable per-photo link
+and deleted after 24 h; sessions work inside a cross-site iframe (how a
+Hugging Face Space page embeds the app); an expired session asks you to
+re-upload instead of showing a wrong board. Each is pinned by a test.
 
----
+## How it works
 
-## How the pipeline works
+- `chess_vision/vision.py`: loads the photo (EXIF-upright, capped at 2000 px);
+  finds the board from several candidates (whole frame, contour quads, a
+  sliding scan) and snaps each onto the exact 8×8 grid (`_refine_quad`), so
+  the best grid fit wins. Below a fit of 0.68 there is no board; below 0.80
+  the whole read is tinted as doubtful.
+- `chess_vision/model_backend.py`: fine-tuned YOLOv8n (ONNX, 640 px) on the
+  warped board, with a mirrored second pass; 90° rotation recovery.
+- `chess_vision/sanity.py`: chess-rule repairs and flags.
+- `app/`: FastAPI + htmx pages, Stockfish over UCI, in-memory sessions.
 
-**Phase 1 — vision (`chess_vision/`)**
-
-1. **Board detection** (`vision.py`) — locate the board: the whole frame and
-   the largest perspective-correctable quad are both scored on how cleanly
-   their cells form a checkerboard; the better one wins.
-2. **Segmentation** — the board is warped to 640×640 and split into 64 cells.
-3. **Per-square classification** — each cell is matched against a reference
-   set of piece glyphs (rendered by python-chess) on light and dark
-   backgrounds, using normalized cross-correlation. Empty squares are found
-   by comparison to an empty-cell template.
-4. **FEN assembly + orientation** (`orientation.py`) — squares become a FEN;
-   if Black's side was closer to the camera the board is rotated 180°.
-5. A `VisionResult` carries the FEN, an overall + per-square confidence, and
-   a `detection_failed` flag. On failure it falls back to the starting
-   position so you can set the board up manually.
-
-**Phase 2 — web app (`app/`)**
-
-- FastAPI + Jinja2 + HTMX. `app/engine.py` drives Stockfish over UCI
-  (`multipv=3`, depth 18, 1.0 s, 5 s hard timeout). `app/session.py` keeps
-  per-user state in an in-memory dict keyed by a cookie UUID.
-
-### The vision backend is pluggable
-
-`vision.py` defines a `VisionBackend` protocol. The shipped `ClassicalBackend`
-needs no model download. A YOLO or hosted-API backend can be dropped in as a
-single new class — see *Known limitations* and *Roadmap*.
-
----
-
-## Known limitations
-
-- **Vision quality depends heavily on the photo.** The classical backend
-  works well on clean, top-down (overhead) board images — rendered diagrams,
-  scans, flat phone photos shot straight down. **Oblique angles, shadows,
-  glare, and unusual piece sets will reduce accuracy or fail outright.**
-  When detection fails, the app falls back to the starting position and asks
-  you to set the board up by clicking squares. Always sanity-check the parsed
-  board before trusting the engine.
-- **Piece-type recognition is template-based.** It is tuned to a standard
-  2D piece set. A real-world model backend (YOLO / hosted API) would
-  generalize far better — it was the intended approach but both Hugging Face
-  and Roboflow are blocked by this environment's network policy (see below).
-- **90° / mirrored orientations** are not auto-corrected — only the 180°
-  "which side is closer" case is handled, via the orientation control.
-- **Single user, single process.** Session state is in-memory, so run one
-  uvicorn worker and expect state to reset when the server restarts.
-- **Build-environment note:** the brief specified Tailwind + HTMX via CDN,
-  but this environment's network policy blocks those CDNs. HTMX is therefore
-  vendored in `static/`, and styling is a hand-written `static/app.css` —
-  still no build step, and the app works fully offline.
-
----
-
-## Roadmap
-
-- **Swap in a real vision backend.** Implement `VisionBackend` with a YOLO
-  chess-piece detector (e.g. a fine-tuned YOLO11) or a hosted inference API
-  for robust real-photo recognition at oblique angles.
-- **Add a YOLO option** selectable at runtime, falling back to the classical
-  backend when no model/network is available.
-- **Better board detection** — corner refinement and automatic 90°/mirror
-  orientation correction.
-- **Multi-position game replay** — analyze a sequence of photos as a game,
-  step through moves, and show an evaluation graph.
-- **Engine controls** — expose depth/time/skill level in the UI.
-- **Persistent sessions** — move session state to Redis for multi-user use.
-
----
-
-## Tests
+## Tests and evaluation
 
 ```bash
-pytest -v
+pytest -q                                    # 168 tests (CI runs them on every push)
+python bench/full_eval.py                    # accuracy on the labelled photo set
+python bench/e2e_load.py --users 4           # real HTTP, concurrent users
+python bench/smoke_bundle.py                 # the deploy bundle, from an empty folder
+python bench/board_presence_eval.py ...      # "is there a board?" thresholds
 ```
 
-- `test_vision_synthetic.py` / `test_vision_fallback.py` / `test_orientation.py`
-  — vision pipeline on synthetic fixtures, the failure fallback, and FEN
-  rotation. *Synthetic fixtures test the rendering / segmentation / FEN
-  layers only — not real-world vision, which needs real photos.*
-- `test_engine.py` — Stockfish on a mate-in-1, an equal middlegame, and a
-  drawn K-vs-K endgame.
-- `test_routes.py` — every HTTP route, plus the edge cases (bad uploads,
-  illegal positions, engine-before-analyze).
+## Next steps
 
----
+- **Train on other piece sets.** The single biggest improvement. ChessReD
+  (10,800 phone photos of another set, CC BY-NC-SA) can't be downloaded from
+  the environment this was built in. `bench/chessred_prepare.py` turns it into
+  a scored test set; the same corner labels can produce training crops.
+- **Deploy**: needs a Hugging Face PRO account or another container host.
 
-## Project layout
+## License
 
-```
-chess_vision/      Phase 1 — vision pipeline + CLI
-  vision.py          image -> FEN, pluggable VisionBackend
-  orientation.py     180° FEN/grid rotation
-  render.py          FEN -> SVG/PNG, side-by-side visualization
-  cli.py             python -m chess_vision.cli
-app/               Phase 2 — web app
-  main.py            FastAPI routes
-  engine.py          Stockfish (UCI) wrapper
-  session.py         in-memory session store
-templates/         Jinja2 + HTMX templates
-static/            CSS + vendored htmx.min.js
-tests/             test suite + synthetic fixtures
-```
+Model weights are Ultralytics YOLO derivatives (AGPL-3.0): fine for personal
+and learning use; commercial use needs an Ultralytics license or another model.

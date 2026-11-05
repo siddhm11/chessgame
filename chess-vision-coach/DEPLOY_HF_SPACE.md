@@ -1,7 +1,13 @@
-# Deploy to Hugging Face Spaces (free)
+# Deploy to Hugging Face Spaces
 
 Result: a public web app at `https://huggingface.co/spaces/<you>/chess-vision-coach`
 (HTTPS included, nothing to host). One command; ~5 minutes including the build.
+
+> **Needs a paid Hugging Face plan.** Hugging Face's docs (Spaces Overview):
+> *"Gradio and Docker Spaces run on compute and require a paid plan to create:
+> PRO for personal accounts."* The Space then runs on free "CPU Basic"
+> hardware. Without PRO, see **Other hosts** below: the Dockerfile is portable.
+> `deploy_hf_space.py` checks your plan before doing anything.
 
 ## 1. Get a write token (once)
 
@@ -50,7 +56,7 @@ The exact bundle is smoke-tested by `bench/smoke_bundle.py`: it is installed
 into an empty folder with a fresh virtualenv, started the way the Dockerfile
 starts it, and run through upload → analyze → best move → play move.
 
-## Free tier: what to expect
+## CPU Basic hardware: what to expect
 
 - 2 vCPU, 16 GB RAM. One photo takes ~0.6 s to read; several people uploading
   at once queue up (a few seconds each), they don't fail.
@@ -75,3 +81,16 @@ starts it, and run through upload → analyze → best move → play move.
 The model weights are Ultralytics YOLO derivatives (AGPL-3.0). Fine for
 personal / learning use; a commercial deployment needs an Ultralytics
 license or a different model.
+
+## Other hosts
+
+The same image runs anywhere that runs a Docker container listening on port
+8000 with ~1 GB of memory, e.g. Google Cloud Run (`gcloud run deploy --source .`
+from this folder, `--port 8000 --memory 2Gi`), Fly.io, Render, or a small VM
+(`docker build -t chess-coach . && docker run -p 8000:8000 chess-coach`).
+Keep a single instance/worker: sessions live in process memory.
+
+Note: the Dockerfile has not been built in the environment where it was
+written (no Docker daemon there). Its base image is pinned by digest to
+Debian 12, and its system packages (libcairo2, stockfish) were derived from
+what the Python wheels actually link against.
