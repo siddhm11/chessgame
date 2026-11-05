@@ -11,12 +11,14 @@ For multi-user or multi-process deployment this would need Redis or similar.
 
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 
 COOKIE_NAME = "cvc_session"
+_SID = re.compile(r"[0-9a-f]{32}")
 
 
 @dataclass
@@ -51,8 +53,8 @@ class SessionStore:
         self._lock = threading.Lock()
         self._max = max_sessions
 
-    def create(self) -> tuple[str, Session]:
-        sid = uuid.uuid4().hex
+    def create(self, sid: str | None = None) -> tuple[str, Session]:
+        sid = sid or uuid.uuid4().hex
         session = Session()
         with self._lock:
             self._data[sid] = session
@@ -72,6 +74,12 @@ class SessionStore:
         session = self.get(sid)
         if session is not None and sid is not None:
             return sid, session
+        # A well-formed id we don't know (server restarted -- e.g. a Space
+        # woke from sleep -- or the session was evicted): adopt it, so the
+        # open page, which keeps sending that id, keeps working instead of
+        # getting a fresh empty session on every click.
+        if sid is not None and _SID.fullmatch(sid):
+            return self.create(sid)
         return self.create()
 
     def _evict(self) -> None:

@@ -11,6 +11,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import time
 import threading
 import uuid
@@ -169,8 +170,16 @@ def board_view(session, *, arrows: list | None = None) -> dict:
     return {"board_svg": svg, "low_conf_count": len(fill)}
 
 
+# The page sends its session id in this header on every htmx request
+# (hx-headers on <body>). Cookies alone don't work when the app runs in a
+# cross-site iframe -- exactly how a Hugging Face Space page embeds it --
+# because browsers don't send SameSite=Lax cookies there. Measured: in an
+# iframe the cookie-only app lost its session on every click.
+SESSION_HEADER = "X-CVC-Session"
+
+
 def _session_from_request(request: Request):
-    sid = request.cookies.get(COOKIE_NAME)
+    sid = request.headers.get(SESSION_HEADER) or request.cookies.get(COOKIE_NAME)
     return store.get_or_create(sid)
 
 
@@ -258,28 +267,34 @@ def _discard_upload(name: str | None) -> None:
             pass
 
 
-@app.get("/photo")
-def photo(request: Request) -> Response:
-    """The current session's uploaded photo -- and only that.
+_PHOTO_TOKEN = re.compile(r"[0-9a-f]{32}")
 
-    Uploads are not a public static folder: on a shared deployment anyone
-    could otherwise fetch other people's photos by URL.
+
+@app.get("/photo/{token}")
+def photo(token: str) -> Response:
+    """An uploaded photo, by its unguessable per-upload token.
+
+    Uploads are not a public folder (nothing can be listed or guessed), and
+    the token is unrelated to the session id. A capability link rather than a
+    cookie check, because cookies don't reach a cross-site iframe (a Hugging
+    Face Space page) and an <img> can't send the session header.
     """
-    session = store.get(request.cookies.get(COOKIE_NAME))
-    name = session.upload_name if session else None
-    path = UPLOADS_DIR / name if name else None
-    if path is None or not path.is_file():
+    path = UPLOADS_DIR / f"{token}.jpg"
+    if not _PHOTO_TOKEN.fullmatch(token) or not path.is_file():
         return PlainTextResponse("Not found", status_code=404)
     return FileResponse(
         path, media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers={"Cache-Control": "private, max-age=3600",
+                 "Referrer-Policy": "no-referrer"},
     )
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> Response:
     sid, _session = _session_from_request(request)
-    response = templates.TemplateResponse(request, "index.html", {"error": None})
+    response = templates.TemplateResponse(
+        request, "index.html", {"error": None, "session_id": sid,
+                                "session_header": SESSION_HEADER})
     return _with_cookie(response, sid)
 
 
@@ -336,7 +351,7 @@ async def analyze(
         )
         _discard_upload(session.upload_name)   # a new photo replaces the old one
         session.upload_name = fname
-        session.original_image_url = f"/photo?v={fname[:12]}"
+        session.original_image_url = f"/photo/{Path(fname).stem}"
         session.board_corners, session.corners_by_user = None, False
 
     image_path = UPLOADS_DIR / session.upload_name if session.upload_name else None

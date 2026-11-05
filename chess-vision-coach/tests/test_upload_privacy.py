@@ -1,14 +1,18 @@
-"""Uploaded photos are private to the session that uploaded them.
+"""Uploaded photos stay private, and sessions work without cookies.
 
-On a public deployment, two things used to leak:
-- photos were a public static folder (/uploads/...), fetchable by anyone
-  holding the URL;
-- the file name started with the session id -- the cookie value -- so the
-  thumbnail URL in the page doubled as a session credential.
+Two things used to leak on a public deployment:
+- photos were a public static folder (/uploads/...);
+- the file name started with the session id, so the thumbnail URL doubled
+  as a session credential.
+Now each photo has its own random 128-bit token (/photo/<token>), unrelated
+to the session id; nothing can be listed or guessed. It is a capability link
+-- not a cookie check -- because inside a Hugging Face Space page (a
+cross-site iframe) cookies aren't sent at all.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -28,27 +32,29 @@ def _upload(client: TestClient, name: str = "starting.png"):
         )
 
 
-def test_page_never_contains_the_session_id():
+def test_photo_link_never_contains_the_session_id():
     client = TestClient(app)
     resp = _upload(client)
     sid = client.cookies.get(COOKIE_NAME)
     assert sid and resp.status_code == 200
-    assert sid not in resp.text
-    assert "/photo?v=" in resp.text
+    assert sid not in resp.text                      # the analysis fragment
+    link = re.search(r'src="(/photo/[0-9a-f]{32})"', resp.text).group(1)
+    assert sid not in link
     assert "/uploads/" not in resp.text
 
 
-def test_photo_served_to_owner_only():
+def test_photo_link_works_without_cookies_and_nothing_is_guessable():
     owner = TestClient(app)
-    _upload(owner)
-    resp = owner.get("/photo")
+    link = re.search(r'src="(/photo/[0-9a-f]{32})"', _upload(owner).text).group(1)
+    resp = TestClient(app).get(link)                 # no cookie at all (iframe case)
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
-    assert resp.content[:2] == b"\xff\xd8"          # a real JPEG
+    assert resp.content[:2] == b"\xff\xd8"
     assert "private" in resp.headers.get("cache-control", "")
-
-    stranger = TestClient(app)                        # no cookie
-    assert stranger.get("/photo").status_code == 404
+    stranger = TestClient(app)
+    for bad in ["/photo/" + "0" * 32, "/photo/abc", "/photo/..%2Fapp%2Fmain.py",
+                "/photo/" + "A" * 32, "/photo", "/photo/"]:
+        assert stranger.get(bad).status_code == 404, bad
 
 
 def test_upload_folder_is_not_publicly_mounted():

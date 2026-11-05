@@ -83,8 +83,10 @@ def main() -> int:
             checks.append(("board found (not the fallback)", 'data-failed="0"' in r.text))
             if truth:
                 checks.append((f"FEN matches the photo's true position", fen.split()[0] == truth))
-            r = c.get("/photo")
-            checks.append(("GET /photo serves the upload to its owner", r.status_code == 200 and r.content[:2] == b"\xff\xd8"))
+            link = re.search(r'src="(/photo/[0-9a-f]{32})"', r.text)
+            r = httpx.get(base + link.group(1), timeout=30) if link else None   # no cookie: iframe case
+            checks.append(("photo link serves the upload (no cookie needed)",
+                           r is not None and r.status_code == 200 and r.content[:2] == b"\xff\xd8"))
             r = c.post("/best-move", data={"level": "fast"})
             mv = UCI_RE.search(r.text)
             checks.append(("POST /best-move: Stockfish answers", r.status_code == 200 and bool(mv)))

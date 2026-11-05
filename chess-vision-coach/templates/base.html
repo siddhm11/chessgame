@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
-<body>
+<body{% if session_id %} hx-headers='{"{{ session_header }}": "{{ session_id }}"}'{% endif %}>
   <header class="site-header">
     <a class="site-title" href="/">&#9818; Chess Vision Coach</a>
     <span class="site-tag">photo &rarr; FEN &rarr; best move</span>
@@ -48,6 +48,20 @@
       if (left < 8) left = 8;
       picker.style.top = (window.scrollY + rect.bottom + 6) + 'px';
       picker.style.left = left + 'px';
+    }
+
+    // Download the FEN straight from the page: no server round trip, so it
+    // works even where cookies don't (e.g. inside a Hugging Face Space page).
+    function cvcDownloadFen() {
+      var el = document.getElementById('fen-text');
+      if (!el) return;
+      var blob = new Blob([el.textContent.trim() + '\n'], { type: 'text/plain' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'position.fen';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
     }
 
     function cvcCopyFen(evt) {
