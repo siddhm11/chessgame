@@ -3,7 +3,30 @@
   <section class="col col-left">
     <h2>Your photo</h2>
     {% if image_url %}
-    <img class="photo" src="{{ image_url }}" alt="uploaded chessboard photo">
+    <div class="photo-wrap" id="photo-wrap" data-corners="{{ board_corners_json }}"
+         data-failed="{{ '1' if detection_failed else '0' }}">
+      <img class="photo" src="{{ image_url }}" alt="uploaded chessboard photo">
+      <svg class="board-outline" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+        <polygon id="board-poly" points=""></polygon>
+      </svg>
+      {% for label in ['top-left', 'top-right', 'bottom-right', 'bottom-left'] %}
+      <button type="button" class="corner-handle" data-i="{{ loop.index0 }}"
+              aria-label="Board corner {{ loop.index }} ({{ label }} of the board). Drag, or use arrow keys."></button>
+      {% endfor %}
+    </div>
+    {% if corner_error %}
+    <div class="banner banner-error">{{ corner_error }}</div>
+    {% endif %}
+    <div class="corner-actions">
+      <span class="muted corner-hint">
+        {% if detection_failed %}Drag the 4 dots onto the board's corners, then press <b>Re-read board</b>.
+        {% elif corners_by_user %}Using the corners you marked.
+        {% else %}Green outline wrong? Drag its 4 dots onto the board's corners.{% endif %}
+      </span>
+      <button type="button" class="btn{% if detection_failed %} btn-primary{% endif %}" id="reread-btn"
+              hx-post="/analyze" hx-include=".reanalyze" hx-target="#app" hx-swap="innerHTML"
+              hx-vals='js:{corners: cvcCornersJSON()}' hx-indicator="#reanalyze-spinner">Re-read board</button>
+    </div>
     {% endif %}
 
     <form class="reanalyze" hx-post="/analyze" hx-target="#app" hx-swap="innerHTML"
@@ -40,8 +63,9 @@
   <section class="col col-right">
     {% if detection_failed %}
     <div class="banner banner-warn">
-      Couldn't auto-detect the board. Please set up the position manually by
-      clicking squares.
+      Couldn't find a chessboard in this photo. Drag the 4 dots on your photo
+      onto the board's corners and press <b>Re-read board</b> &mdash; or set up
+      the position by clicking squares.
     </div>
     {% else %}
     <div class="banner banner-info">

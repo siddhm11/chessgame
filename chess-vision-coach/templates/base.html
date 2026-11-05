@@ -70,10 +70,89 @@
       cvcClearSelected();
     });
 
+    // ---- Board corners: outline on the photo, 4 draggable dots ------------
+    window.cvcCorners = null;
+
+    function cvcCornersJSON() {
+      return window.cvcCorners ? JSON.stringify(window.cvcCorners) : '';
+    }
+
+    function cvcInitCorners() {
+      var wrap = document.getElementById('photo-wrap');
+      if (!wrap) { window.cvcCorners = null; return; }
+      var pts = null;
+      try { pts = JSON.parse(wrap.getAttribute('data-corners') || 'null'); } catch (e) { pts = null; }
+      if (!pts || pts.length !== 4) {
+        // No board found: start from a rectangle the user can drag outward.
+        pts = [[0.15, 0.15], [0.85, 0.15], [0.85, 0.85], [0.15, 0.85]];
+        wrap.classList.add('editing');
+      }
+      window.cvcCorners = pts;
+      var poly = wrap.querySelector('#board-poly');
+      var handles = wrap.querySelectorAll('.corner-handle');
+      var reread = document.getElementById('reread-btn');
+
+      function clamp(v) { return Math.min(1, Math.max(0, v)); }
+      function draw() {
+        poly.setAttribute('points', pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' '));
+        for (var i = 0; i < handles.length; i++) {
+          handles[i].style.left = (pts[i][0] * 100) + '%';
+          handles[i].style.top = (pts[i][1] * 100) + '%';
+        }
+      }
+      function moved() {
+        wrap.classList.add('editing');
+        if (reread) reread.classList.add('btn-primary');
+      }
+      // Drag: track the active dot with window-level listeners rather than
+      // pointer capture. With capture, the first tap after a finger drag was
+      // swallowed on touch screens (Re-read board "did nothing" once) --
+      // measured with real touch events.
+      var active = -1;
+      function onMove(e) {
+        if (active < 0) return;
+        var r = wrap.getBoundingClientRect();
+        pts[active] = [clamp((e.clientX - r.left) / r.width), clamp((e.clientY - r.top) / r.height)];
+        draw(); moved();
+      }
+      function onUp() {
+        if (active < 0) return;
+        handles[active].classList.remove('dragging');
+        active = -1;
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+      }
+      Array.prototype.forEach.call(handles, function (h) {
+        var i = +h.getAttribute('data-i');
+        h.addEventListener('pointerdown', function (e) {
+          // No preventDefault(): `touch-action: none` (CSS) already stops the
+          // page scrolling under a finger.
+          active = i;
+          h.classList.add('dragging');
+          window.addEventListener('pointermove', onMove);
+          window.addEventListener('pointerup', onUp);
+          window.addEventListener('pointercancel', onUp);
+        });
+        h.addEventListener('keydown', function (e) {
+          var step = e.shiftKey ? 0.02 : 0.004;
+          var d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+          if (!d) return;
+          e.preventDefault();
+          pts[i] = [clamp(pts[i][0] + d[0]), clamp(pts[i][1] + d[1])];
+          draw(); moved();
+        });
+      });
+      draw();
+    }
+
+    document.addEventListener('DOMContentLoaded', cvcInitCorners);
+
     document.body.addEventListener('htmx:afterSwap', function () {
       var picker = document.getElementById('piece-picker');
       if (picker) picker.style.display = 'none';
       cvcClearSelected();
+      cvcInitCorners();
     });
   </script>
 </body>

@@ -51,6 +51,12 @@ FILES = "abcdefgh"
 # Below this overall confidence the parse is treated as a failure and the
 # pipeline falls back to the starting position with detection_failed=True.
 CONF_THRESHOLD = 0.5
+# Below this board-grid fit there is no chessboard in the photo (measured by
+# bench/board_presence_eval.py: 508 real boards scored 0.732-1.01, 96
+# ordinary non-chess photos 0.48-0.63; 0.68 is the midpoint of that gap).
+# Never applied when the user marked the board's corners themselves.
+NO_BOARD_FIT = 0.68
+
 # Longest side images are processed at. 24 MP phone/DSLR photos are decoded
 # straight to ~this size; the board crop still gets 2-3x the 640px it needs.
 MAX_WORK_SIDE = 2000
@@ -73,6 +79,9 @@ class VisionResult:
     # (e.g. "e8: no K found anywhere; reread Q as K"). Square names match
     # the returned FEN's orientation.
     notes: list[str] = field(default_factory=list)
+    # Where the board was found: 4 (x, y) points in [0, 1] coordinates of the
+    # (upright) photo, clockwise from top-left. None when no board was found.
+    board_corners: Optional[list[list[float]]] = None
 
 
 @dataclass
@@ -87,6 +96,30 @@ class BackendOutput:
     # Auto-repair notes from the backend's sanity layer, square-prefixed
     # ("e8: ..."), in the backend's (pre-orientation) frame.
     notes: list[str] = field(default_factory=list)
+    # Board quad used, normalised to [0, 1] image coordinates (TL, TR, BR, BL).
+    corners: Optional[list[list[float]]] = None
+
+
+@dataclass
+class BoardCrop:
+    """Result of locating the board in a photo."""
+
+    image: np.ndarray   # board warped to BOARD_PX x BOARD_PX
+    fit: float          # sharp grid fit, ~0.9-1.0 when it sits on the squares
+    quad: np.ndarray    # (4, 2) corners in source pixels: TL, TR, BR, BL
+
+
+def no_board_output() -> BackendOutput:
+    """What a backend returns when the photo holds no chessboard."""
+    return BackendOutput(grid=[["."] * 8 for _ in range(8)],
+                         conf=[[0.0] * 8 for _ in range(8)], board_found=False)
+
+
+def normalise_quad(quad: np.ndarray, shape) -> list[list[float]]:
+    """Pixel quad -> [[x, y], ...] in [0, 1] (rounded; for the UI/JSON)."""
+    h, w = shape[:2]
+    q = np.asarray(quad, dtype="float64").reshape(4, 2) / [w, h]
+    return [[round(float(x), 4), round(float(y), 4)] for x, y in q]
 
 
 @runtime_checkable
@@ -99,7 +132,8 @@ class VisionBackend(Protocol):
 
     name: str
 
-    def analyze(self, image_bgr: np.ndarray) -> BackendOutput:
+    def analyze(self, image_bgr: np.ndarray, corners=None) -> BackendOutput:
+        """`corners`: optional user-marked board corners, 4 (x, y) in [0, 1]."""
         ...
 
 
@@ -559,33 +593,52 @@ class ClassicalBackend:
     def _find_board(self, img_bgr: np.ndarray) -> np.ndarray:
         """Compatibility wrapper: the crop only, with the grid-fit score left
         on `self.last_board_score`. NOT safe when one backend instance serves
-        concurrent requests -- use `find_board_scored` there."""
-        crop, score = self.find_board_scored(img_bgr)
-        self.last_board_score = score
-        return crop
+        concurrent requests -- use `locate_board` there."""
+        found = self.locate_board(img_bgr)
+        self.last_board_score = found.fit
+        return found.image
 
     def find_board_scored(self, img_bgr: np.ndarray) -> tuple[np.ndarray, float]:
-        """Return (board warped to BOARD_PX x BOARD_PX, grid-fit score).
+        """(board warped to BOARD_PX x BOARD_PX, grid-fit score)."""
+        found = self.locate_board(img_bgr)
+        return found.image, found.fit
 
-        Rough candidates:
+    # A user-placed corner may be snapped onto the grid, but never moved
+    # further than this fraction of a square: the user's placement wins over
+    # a doubtful automatic fit.
+    _USER_SNAP_MAX = 0.75
+
+    def locate_board(self, img_bgr: np.ndarray, corners=None) -> "BoardCrop":
+        """Find the board and warp it to BOARD_PX x BOARD_PX.
+
+        `corners`: optional 4 (x, y) points in [0, 1] image coordinates, any
+        order -- the user marking the board. They are snapped onto the exact
+        8x8 grid (users click roughly; boards often have a label margin), but
+        no corner moves more than `_USER_SNAP_MAX` of a square.
+
+        Without corners, rough candidates are tried:
           (a) whole frame -- synthetic fixtures / board fills the frame.
           (b) largest 4-corner quad -- board edge clearly visible.
           (c) sliding-square scan -- board is a sub-rectangle of the photo.
         Each is snapped onto the 8x8 grid by `_refine_quad`; the best grid fit
-        wins. The score (sharp `_grid_fit`, ~0.9-1.0 when the crop sits on the
+        wins. The fit (sharp `_grid_fit`, ~0.9-1.0 when the crop sits on the
         squares) lets callers tell a trustworthy crop from a doubtful one.
         Pure function of the input: no shared state, thread-safe.
         """
+        h, w = img_bgr.shape[:2]
+        if corners is not None:
+            return self._locate_from_user(img_bgr, corners)
+
         whole = cv2.resize(img_bgr, (BOARD_PX, BOARD_PX))
+        frame = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype="float32")
         if self._checkerboard_score(whole) >= 0.97:
             # Rendered diagrams / perfectly framed boards: already aligned.
             ii = cv2.integral(cv2.cvtColor(whole, cv2.COLOR_BGR2GRAY).astype(np.float64))
             score = self._grid_fit(
                 ii, 0, 0, BOARD_PX, BOARD_PX,
                 inset=self._SHARP_INSET, patch=self._SHARP_PATCH)
-            return whole, float(score)
+            return BoardCrop(whole, float(score), frame)
 
-        h, w = img_bgr.shape[:2]
         best_quad, best_score = None, -1.0
 
         def consider(cand):
@@ -617,8 +670,29 @@ class ClassicalBackend:
                 consider(scan_quad)
 
         if best_quad is None:
-            return whole, float(best_score)
-        return self._warp_quad(img_bgr, best_quad), float(best_score)
+            return BoardCrop(whole, float(best_score), frame)
+        quad = self._order_points(best_quad)
+        return BoardCrop(self._warp_quad(img_bgr, quad), float(best_score), quad)
+
+    def _locate_from_user(self, img_bgr: np.ndarray, corners) -> "BoardCrop":
+        h, w = img_bgr.shape[:2]
+        user = self._order_points(
+            np.asarray(corners, dtype="float64").reshape(4, 2) * [w, h]
+        ).astype("float32")
+        quad = user
+        try:
+            refined, _ = self._refine_quad(img_bgr, user.reshape(4, 1, 2))
+            refined = self._order_points(refined)
+            side = max(np.linalg.norm(user[i] - user[(i + 1) % 4]) for i in range(4))
+            if np.linalg.norm(refined - user, axis=1).max() <= self._USER_SNAP_MAX * side / 8:
+                quad = refined
+        except (cv2.error, np.linalg.LinAlgError):
+            pass
+        crop = self._warp_quad(img_bgr, quad)
+        ii = cv2.integral(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float64))
+        fit = self._grid_fit(ii, 0, 0, BOARD_PX, BOARD_PX,
+                             inset=self._SHARP_INSET, patch=self._SHARP_PATCH)
+        return BoardCrop(crop, float(fit), quad)
 
     # -- per-square classification -----------------------------------------
 
@@ -660,8 +734,11 @@ class ClassicalBackend:
                 best_score, best_sym = score, sym
         return best_sym, max(0.0, best_score)
 
-    def analyze(self, image_bgr: np.ndarray) -> BackendOutput:
-        board = self._find_board(image_bgr)
+    def analyze(self, image_bgr: np.ndarray, corners=None) -> BackendOutput:
+        found = self.locate_board(image_bgr, corners)
+        if corners is None and found.fit < NO_BOARD_FIT:
+            return no_board_output()
+        board = found.image
         grid: list[list[str]] = []
         conf: list[list[float]] = []
         for r in range(8):
@@ -674,7 +751,8 @@ class ClassicalBackend:
                 row_conf.append(score)
             grid.append(row_sym)
             conf.append(row_conf)
-        return BackendOutput(grid=grid, conf=conf, board_found=True)
+        return BackendOutput(grid=grid, conf=conf, board_found=True,
+                             corners=normalise_quad(found.quad, image_bgr.shape))
 
 
 # --------------------------------------------------------------------------
@@ -855,12 +933,15 @@ def analyze_image(
     orientation: str = "white",
     side_to_move: str = "w",
     backend: VisionBackend | None = None,
+    corners=None,
 ) -> VisionResult:
     """Run the vision pipeline on an image.
 
-    `source` is a file path or a BGR numpy image. On any failure -- bad
-    image, no board, or low overall confidence -- this returns
-    `fallback_result()` (starting position, detection_failed=True).
+    `source` is a file path or a BGR numpy image. `corners`, if given, are
+    the user's marking of the board: 4 (x, y) points in [0, 1] coordinates of
+    the upright photo. On any failure -- bad image, no board, or low overall
+    confidence -- this returns `fallback_result()` (starting position,
+    detection_failed=True).
     """
     backend = backend or _get_default_backend()
     try:
@@ -868,7 +949,7 @@ def analyze_image(
         if min(img.shape[:2]) < 64:
             return fallback_result(side_to_move)
 
-        out = backend.analyze(img)
+        out = backend.analyze(img) if corners is None else backend.analyze(img, corners=corners)
         if not out.board_found:
             return fallback_result(side_to_move)
 
@@ -901,6 +982,7 @@ def analyze_image(
             detection_failed=False,
             per_square_confidence=per_square,
             notes=notes,
+            board_corners=out.corners,
         )
     except Exception:
         return fallback_result(side_to_move)

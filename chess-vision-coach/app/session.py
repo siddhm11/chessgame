@@ -37,6 +37,10 @@ class Session:
     per_square_confidence: dict | None = None
     # Auto-repair notes from the vision sanity layer ("e8: ... reread Q as K").
     vision_notes: list | None = None
+    # Board outline on the photo: 4 [x, y] in [0, 1], TL, TR, BR, BL.
+    board_corners: list | None = None
+    # True once the user dragged the corners; re-analyses then reuse them.
+    corners_by_user: bool = False
     # Monotonic time of the most recent /best-move call; used to throttle.
     last_engine_request: float = 0.0
 

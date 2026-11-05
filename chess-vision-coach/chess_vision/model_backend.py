@@ -50,7 +50,9 @@ import cv2
 import numpy as np
 
 from chess_vision.sanity import sanitize
-from chess_vision.vision import BackendOutput, ClassicalBackend
+from chess_vision.vision import (
+    NO_BOARD_FIT, BackendOutput, ClassicalBackend, no_board_output, normalise_quad,
+)
 
 # Canonical piece name -> FEN symbol (covers both model naming conventions).
 _PIECE_NAME_TO_SYMBOL: dict[str, str] = {
@@ -366,16 +368,22 @@ class ModelBackend:
 
         return grid, conf, alts
 
-    def analyze(self, image_bgr: np.ndarray) -> BackendOutput:
+    def analyze(self, image_bgr: np.ndarray, corners=None) -> BackendOutput:
+        """`corners`: optional user-marked board corners, 4 (x, y) in [0, 1]."""
         self._load()
 
-        # 1. Geometric board crop + warp. The scored variant returns the fit
-        #    instead of stashing it on the shared finder, so concurrent
+        # 1. Geometric board crop + warp. locate_board returns the fit per
+        #    call instead of stashing it on the shared finder, so concurrent
         #    requests on this one backend instance can't read each other's.
-        board_bgr, board_fit = self._board_finder.find_board_scored(image_bgr)
-        self.last_board_score = board_fit  # diagnostics only (bench scripts)
-        out = self._analyze_board(board_bgr)
-        return self._apply_board_doubt(out, board_fit)
+        found = self._board_finder.locate_board(image_bgr, corners)
+        self.last_board_score = found.fit  # diagnostics only (bench scripts)
+        if corners is None and found.fit < NO_BOARD_FIT:
+            # No 8x8 grid anywhere: say so instead of reading pieces off a
+            # cat or a coffee cup. (User-marked corners always proceed.)
+            return no_board_output()
+        out = self._analyze_board(found.image)
+        out.corners = normalise_quad(found.quad, image_bgr.shape)
+        return self._apply_board_doubt(out, found.fit)
 
     @staticmethod
     def _apply_board_doubt(out: BackendOutput, board_fit: float) -> BackendOutput:
@@ -397,7 +405,7 @@ class ModelBackend:
             "from directly above with the whole board in frame."
         )
         return BackendOutput(grid=out.grid, conf=conf, board_found=out.board_found,
-                             notes=[note, *out.notes])
+                             notes=[note, *out.notes], corners=out.corners)
 
     def _analyze_board(self, board_bgr: np.ndarray) -> BackendOutput:
 

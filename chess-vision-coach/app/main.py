@@ -8,6 +8,8 @@ Run a SINGLE uvicorn worker -- session state lives in process memory
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import os
 import time
 import threading
@@ -188,6 +190,9 @@ def _analyze_context(request: Request, session) -> dict:
         "confidence": session.confidence,
         "fen_error": fen_problem(session.fen),
         "vision_notes": session.vision_notes or [],
+        "board_corners_json": json.dumps(session.board_corners) if session.board_corners else "",
+        "corners_by_user": session.corners_by_user,
+        "corner_error": None,
     }
     ctx.update(board_view(session))
     return ctx
@@ -196,6 +201,53 @@ def _analyze_context(request: Request, session) -> dict:
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
+
+
+def parse_corners(raw: str | None) -> list[list[float]] | None:
+    """Validate user-dragged board corners from the form.
+
+    Expects JSON: 4 [x, y] pairs in [0, 1] photo coordinates (any order).
+    Returns them clamped to [0, 1], or None when absent. Raises ValueError
+    for anything that can't be a board outline: wrong shape, non-numbers,
+    far outside the photo, or a degenerate (tiny / self-crossing) quad.
+    """
+    if raw is None or not raw.strip():
+        return None
+    try:
+        pts = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("corners are not valid JSON") from exc
+    if (not isinstance(pts, list) or len(pts) != 4
+            or not all(isinstance(p, list) and len(p) == 2 for p in pts)):
+        raise ValueError("need exactly 4 corner points")
+    out = []
+    for x, y in pts:
+        if isinstance(x, bool) or isinstance(y, bool):
+            raise ValueError("corner coordinates must be numbers")
+        try:
+            x, y = float(x), float(y)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("corner coordinates must be numbers") from exc
+        if not (math.isfinite(x) and math.isfinite(y)) or not (-0.05 <= x <= 1.05 and -0.05 <= y <= 1.05):
+            raise ValueError("corners must lie on the photo")
+        out.append([min(1.0, max(0.0, x)), min(1.0, max(0.0, y))])
+    # Order around the centroid, then require a convex, non-trivial area.
+    cx = sum(p[0] for p in out) / 4
+    cy = sum(p[1] for p in out) / 4
+    ring = sorted(out, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+    area = 0.5 * abs(sum(ring[i][0] * ring[(i + 1) % 4][1] - ring[(i + 1) % 4][0] * ring[i][1]
+                         for i in range(4)))
+    if area < 0.01:
+        raise ValueError("the marked board is too small")
+    signs = set()
+    for i in range(4):
+        a, b, c = ring[i], ring[(i + 1) % 4], ring[(i + 2) % 4]
+        cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+        if abs(cross) > 1e-9:
+            signs.add(cross > 0)
+    if len(signs) > 1:
+        raise ValueError("the marked corners don't form a board shape")
+    return out
 
 
 def _discard_upload(name: str | None) -> None:
@@ -237,10 +289,18 @@ async def analyze(
     image: UploadFile | None = File(None),
     orientation: str = Form("white"),
     side_to_move: str = Form("white"),
+    corners: str | None = Form(None),
 ) -> Response:
     sid, session = _session_from_request(request)
     orientation = "black" if orientation == "black" else "white"
     stm = "b" if side_to_move == "black" else "w"
+    try:
+        user_corners = parse_corners(corners)
+    except ValueError as exc:
+        user_corners = None
+        corner_error = f"Couldn't use those corners: {exc}. Drag the 4 dots onto the board's corners."
+    else:
+        corner_error = None
 
     def upload_error(message: str) -> Response:
         resp = templates.TemplateResponse(
@@ -277,10 +337,19 @@ async def analyze(
         _discard_upload(session.upload_name)   # a new photo replaces the old one
         session.upload_name = fname
         session.original_image_url = f"/photo?v={fname[:12]}"
+        session.board_corners, session.corners_by_user = None, False
 
     image_path = UPLOADS_DIR / session.upload_name if session.upload_name else None
     if image_path is None or not image_path.exists():
         return upload_error("Please choose a chessboard photo to analyze.")
+
+    if corner_error:
+        resp = templates.TemplateResponse(
+            request, "_analyze.html",
+            {**_analyze_context(request, session), "corner_error": corner_error})
+        return _with_cookie(resp, sid)
+    if user_corners is None and session.corners_by_user and not (image is not None and image.filename):
+        user_corners = session.board_corners   # orientation change etc.: keep the user's outline
 
     # The vision pipeline is ~0.5 s of all-core CPU: run it off the event
     # loop (so other users' requests keep flowing) and behind the vision
@@ -288,7 +357,7 @@ async def analyze(
     async with _vision_slots:
         result = await run_in_threadpool(
             vision.analyze_image, str(image_path),
-            orientation=orientation, side_to_move=stm,
+            orientation=orientation, side_to_move=stm, corners=user_corners,
         )
     session.fen = result.fen
     session.orientation = orientation
@@ -297,6 +366,8 @@ async def analyze(
     session.confidence = result.confidence
     session.per_square_confidence = result.per_square_confidence
     session.vision_notes = result.notes or None
+    session.board_corners = result.board_corners or user_corners
+    session.corners_by_user = user_corners is not None
 
     resp = templates.TemplateResponse(
         request, "_analyze.html", _analyze_context(request, session)

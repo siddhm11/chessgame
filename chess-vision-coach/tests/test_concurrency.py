@@ -21,7 +21,7 @@ import pytest
 
 import chess_vision.model_backend as mb
 from chess_vision import vision
-from chess_vision.vision import BackendOutput
+from chess_vision.vision import BackendOutput, BoardCrop
 
 ROOT = Path(__file__).resolve().parent
 
@@ -33,13 +33,14 @@ class _ScriptedFinder:
     def __init__(self):
         self.last_board_score = 1.0
 
-    def find_board_scored(self, img):
-        return img, float(img[0, 0, 0]) / 100.0
+    def locate_board(self, img, corners=None):
+        quad = np.array([[0, 0], [8, 0], [8, 8], [0, 8]], dtype="float32")
+        return BoardCrop(img, float(img[0, 0, 0]) / 100.0, quad)
 
     def _find_board(self, img):
-        crop, score = self.find_board_scored(img)
-        self.last_board_score = score
-        return crop
+        found = self.locate_board(img)
+        self.last_board_score = found.fit
+        return found.image
 
 
 def _backend_with_barrier(n_threads):
@@ -68,15 +69,16 @@ def _img(fit_percent):
 
 
 def test_doubt_gate_uses_each_requests_own_board_fit():
-    """Deterministic: a misaligned (fit 0.60) and an aligned (fit 0.95)
-    photo analysed at the same moment must each get their OWN verdict."""
+    """Deterministic: a doubtful (fit 0.72) and an aligned (fit 0.95) photo
+    analysed at the same moment must each get their OWN verdict. (0.72 sits
+    in the doubt band: above NO_BOARD_FIT 0.68, below _BOARD_DOUBT_FIT 0.80.)"""
     backend = _backend_with_barrier(2)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        low = pool.submit(backend.analyze, _img(60))
+        low = pool.submit(backend.analyze, _img(72))
         high = pool.submit(backend.analyze, _img(95))
         low, high = low.result(timeout=10), high.result(timeout=10)
 
-    assert low.notes and low.notes[0].startswith("Board alignment uncertain (grid fit 0.60)")
+    assert low.notes and low.notes[0].startswith("Board alignment uncertain (grid fit 0.72)")
     assert all(c <= mb._BOARD_DOUBT_CONF for row in low.conf for c in row)
     assert high.notes == []
     assert all(c == 0.95 for row in high.conf for c in row)

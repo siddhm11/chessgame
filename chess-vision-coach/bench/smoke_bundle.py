@@ -80,7 +80,7 @@ def main() -> int:
                            data={"orientation": "white", "side_to_move": "white"})
             fen = FEN_RE.search(r.text).group(1).strip() if FEN_RE.search(r.text) else ""
             checks.append(("POST /analyze returns a board", r.status_code == 200 and bool(fen)))
-            checks.append(("model backend active (not fallback)", "Couldn't auto-detect" not in r.text))
+            checks.append(("board found (not the fallback)", 'data-failed="0"' in r.text))
             if truth:
                 checks.append((f"FEN matches the photo's true position", fen.split()[0] == truth))
             r = c.get("/photo")
