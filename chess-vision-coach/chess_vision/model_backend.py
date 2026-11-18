@@ -94,6 +94,11 @@ _TTA_FILL_CONF = 0.60
 # (matches the app's amber tint threshold in app/main.py).
 _TTA_TRUST_CONF = 0.80
 
+# Shown whenever a sideways photo was turned (bench/sideways_tiebreak.py).
+_SIDEWAYS_NOTE = ("The photo was taken from the side of the board; it was turned so White "
+                  "is at the bottom. If the board looks upside down, switch "
+                  "'Which side is closer to the camera'.")
+
 # Pixel border width used when sampling cell corner brightness.
 _CORNER_PX = 8
 
@@ -106,6 +111,64 @@ def _white_below_black(grid) -> float:
     if not white or not black:
         return 0.0
     return sum(black) / len(black) - sum(white) / len(white)
+
+
+def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
+    shift = value = 0
+    while True:
+        b = buf[i]
+        i += 1
+        value |= (b & 0x7F) << shift
+        if b < 0x80:
+            return value, i
+        shift += 7
+
+
+def _protobuf_fields(buf: bytes):
+    """Yield (field_number, wire_type, value) for one protobuf message level.
+    Length-delimited values are returned as bytes; others as ints."""
+    i = 0
+    while i < len(buf):
+        key, i = _read_varint(buf, i)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, i = _read_varint(buf, i)
+        elif wire == 1:
+            value, i = int.from_bytes(buf[i:i + 8], "little"), i + 8
+        elif wire == 2:
+            n, i = _read_varint(buf, i)
+            value, i = buf[i:i + n], i + n
+        elif wire == 5:
+            value, i = int.from_bytes(buf[i:i + 4], "little"), i + 4
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        yield field, wire, value
+
+
+def _onnx_metadata(model_bytes: bytes) -> dict[str, str]:
+    """ModelProto.metadata_props (field 14: key=1, value=2) without the onnx
+    package -- the same map onnxruntime's custom_metadata_map returns."""
+    meta: dict[str, str] = {}
+    for field, wire, value in _protobuf_fields(model_bytes):
+        if field == 14 and wire == 2:
+            entry = {f: v for f, w, v in _protobuf_fields(value) if w == 2}
+            meta[entry.get(1, b"").decode()] = entry.get(2, b"").decode()
+    return meta
+
+
+class _OpenCVSession:
+    """The slice of onnxruntime.InferenceSession that ModelBackend uses,
+    backed by cv2.dnn."""
+
+    input_name = "images"
+
+    def __init__(self, net) -> None:
+        self._net = net
+
+    def run(self, _outputs, feeds: dict):
+        (blob,) = feeds.values()
+        self._net.setInput(np.ascontiguousarray(blob, dtype=np.float32))
+        return [self._net.forward()]
 
 
 class ModelBackend:
@@ -166,13 +229,23 @@ class ModelBackend:
                 f"ONNX model not found at {self.model_path}. "
                 "Vendor the .onnx file or set CVC_MODEL_PATH."
             )
-        try:
-            import onnxruntime as ort
-        except ImportError as exc:
-            raise ImportError(
-                "onnxruntime is required for ModelBackend. "
-                "Install with: pip install onnxruntime"
-            ) from exc
+        runtime = os.environ.get("CVC_RUNTIME", "auto")
+        ort = None
+        if runtime != "opencv":
+            try:
+                import onnxruntime as ort
+            except ImportError as exc:
+                if runtime == "onnxruntime":
+                    raise ImportError(
+                        "onnxruntime is required for CVC_RUNTIME=onnxruntime. "
+                        "Install with: pip install onnxruntime"
+                    ) from exc
+        if ort is None:
+            # No onnxruntime (e.g. the in-browser build, where Python runs on
+            # WebAssembly): OpenCV's DNN module runs the same ONNX graph.
+            # Measured against onnxruntime: class scores agree to 1e-5.
+            self._create_opencv_session()
+            return
 
         # Build into a local and publish self._session LAST: _load's unlocked
         # fast path treats a non-None session as "fully configured", so the
@@ -211,6 +284,27 @@ class ModelBackend:
 
         self._session = session
 
+    def _create_opencv_session(self):
+        meta = _onnx_metadata(self.model_path.read_bytes())
+        session = _OpenCVSession(cv2.dnn.readNetFromONNX(str(self.model_path)))
+        self._input_name = session.input_name
+        try:
+            self._imgsz = int(json.loads(meta.get("imgsz", "[640, 640]"))[0])
+        except Exception:
+            self._imgsz = 640
+        try:
+            names: dict = ast.literal_eval(meta.get("names", "{}"))
+            mapping = {
+                int(k): _PIECE_NAME_TO_SYMBOL[v]
+                for k, v in names.items()
+                if v in _PIECE_NAME_TO_SYMBOL
+            }
+            if mapping:
+                self._class_to_symbol = mapping
+        except Exception:
+            pass
+        self._session = session
+
     @staticmethod
     def _cell_corner_brightness(gray: np.ndarray, row: int, col: int) -> float:
         """Median brightness of the 4 corner patches of cell (row, col)."""
@@ -227,6 +321,24 @@ class ModelBackend:
     @staticmethod
     def _board_needs_rotation(board_bgr: np.ndarray) -> bool:
         """Return True when the board crop appears 90°-rotated.
+
+        Every square's colour is fixed by its parity: with White at the
+        bottom, a8 -- (row + col) even -- is light, so all 32 even squares are
+        light. A board turned 90 degrees swaps the parities. Compares the
+        median corner brightness of the even squares against the odd ones:
+        32 squares a side out-vote any piece that covers a square's corners.
+        """
+        gray = cv2.cvtColor(board_bgr, cv2.COLOR_BGR2GRAY)
+        cells = [[ModelBackend._cell_corner_brightness(gray, r, c) for c in range(8)]
+                 for r in range(8)]
+        even = np.median([cells[r][c] for r in range(8) for c in range(8) if (r + c) % 2 == 0])
+        odd = np.median([cells[r][c] for r in range(8) for c in range(8) if (r + c) % 2 == 1])
+        return bool(even < odd)
+
+    @staticmethod
+    def _board_needs_rotation_two_corners(board_bgr: np.ndarray) -> bool:
+        """Previous detector, kept for bench/rotation_check.py: return True
+        when the board crop appears 90°-rotated.
 
         In standard orientation (white at bottom) file-a squares alternate:
         a8 (row 0, col 0) is LIGHT and a1 (row 7, col 0) is DARK, so
@@ -448,7 +560,12 @@ class ModelBackend:
                 kings = ("K" in flat) + ("k" in flat)
                 options.append(((kings, _white_below_black(r_grid)), (r_grid, r_conf, r_alts)))
             best = max(options, key=lambda o: o[0])
-            return self._finalize(*best[1])
+            out = self._finalize(*best[1])
+            # The pick is right ~97% of the time (217/224 held-out), but a
+            # wrong one turns the whole board upside down with confident
+            # squares. Say what happened, and the one-tap fix.
+            out.notes.append(_SIDEWAYS_NOTE)
+            return out
 
         # 3. Standard inference on the (already correctly oriented) crop.
         grid, conf, alts = self._infer_board(board_bgr)
