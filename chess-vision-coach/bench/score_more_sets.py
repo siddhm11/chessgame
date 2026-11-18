@@ -81,15 +81,18 @@ def placement_from_grid(grid) -> str:
 
 
 def compare(pred, conf, truth) -> dict:
-    wrong = silent = 0
+    wrong = silent = false_tint = 0
     confusions = Counter()
     for r in range(8):
         for c in range(8):
-            if pred[r][c] != truth[r][c]:
+            if pred[r][c] == truth[r][c]:
+                false_tint += conf[r][c] < TINT
+            else:
                 wrong += 1
                 silent += conf[r][c] >= TINT
                 confusions[f"{truth[r][c]}->{pred[r][c]}"] += 1
-    return {"wrong": wrong, "silent": silent, "confusions": confusions}
+    return {"wrong": wrong, "silent": silent, "false_tint": false_tint,
+            "confusions": confusions}
 
 
 class BestMove:
@@ -177,6 +180,7 @@ def run(items, mode: str, pad: float, depth: int, label: str) -> dict:
             tot["squares"] += 64
             tot["wrong"] += cmp["wrong"]
             tot["silent"] += cmp["silent"]
+            tot["false_tint"] += 0 if failed else cmp["false_tint"]
             tot["perfect"] += cmp["wrong"] == 0
             tot["fallback"] += failed
             tot["truth_invalid"] += agree is None
@@ -194,7 +198,8 @@ def run(items, mode: str, pad: float, depth: int, label: str) -> dict:
         "set": label, "mode": mode, "boards": tot["boards"],
         "exact": 1 - tot["wrong"] / max(1, tot["squares"]),
         "perfect": tot["perfect"], "wrong_squares": tot["wrong"], "silent": tot["silent"],
-        "silent_per_board": tot["silent"] / n, "fallbacks": tot["fallback"],
+        "silent_per_board": tot["silent"] / n,
+        "false_tints_per_board": tot["false_tint"] / n, "fallbacks": tot["fallback"],
         "pred_invalid": tot["pred_invalid"], "truth_invalid": tot["truth_invalid"],
         "best_move_agree": tot["bm_agree"], "best_move_scored": tot["bm_scored"],
         "p50_s": lat[len(lat) // 2] if lat else 0.0,
@@ -203,6 +208,7 @@ def run(items, mode: str, pad: float, depth: int, label: str) -> dict:
     print(f"  {label} [{mode}] boards={out['boards']} exact={out['exact']:.2%} "
           f"perfect={out['perfect']}/{out['boards']} wrong={out['wrong_squares']} "
           f"silent={out['silent']} ({out['silent_per_board']:.2f}/board) "
+          f"false-tints={out['false_tints_per_board']:.2f}/board "
           f"best-move {out['best_move_agree']}/{out['best_move_scored']} "
           f"(true-invalid {out['truth_invalid']}, pred-invalid {out['pred_invalid']}) "
           f"fallback={out['fallbacks']} p50={out['p50_s']:.2f}s")
