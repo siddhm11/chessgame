@@ -11,6 +11,9 @@ RAM caching, early stopping. Override via env vars if you have a GPU.
   CVC_FT_BATCH   batch size          (default 16)
   CVC_FT_EXPORT  exported .onnx name (default yolov8n-chess-finetuned.onnx)
   CVC_FT_RUN     run directory name  (default yolo_chess_cpu)
+  CVC_FT_DATA    dataset.yaml        (default finetune_data/dataset.yaml)
+  CVC_FT_PATIENCE early-stop patience (default 5)
+  CVC_FT_FRACTION fraction of the train set per epoch (default 1.0)
 
 Outputs:
   runs/detect/chess_finetune/<name>/weights/best.pt   best checkpoint
@@ -30,7 +33,9 @@ MODEL  = os.environ.get("CVC_FT_MODEL", "yolov8n.pt")
 IMGSZ  = int(os.environ.get("CVC_FT_IMGSZ", "416"))
 EPOCHS = int(os.environ.get("CVC_FT_EPOCHS", "20"))
 BATCH  = int(os.environ.get("CVC_FT_BATCH", "16"))
-DATA   = HERE / "finetune_data" / "dataset.yaml"
+DATA   = Path(os.environ.get("CVC_FT_DATA", HERE / "finetune_data" / "dataset.yaml"))
+PATIENCE = int(os.environ.get("CVC_FT_PATIENCE", "5"))
+FRACTION = float(os.environ.get("CVC_FT_FRACTION", "1.0"))
 RUN    = os.environ.get("CVC_FT_RUN", "yolo_chess_cpu")
 
 EXPORT_NAME = os.environ.get("CVC_FT_EXPORT", "yolov8n-chess-finetuned.onnx")
@@ -55,7 +60,8 @@ def main() -> None:
         device="cpu",
         workers=4,
         cache="ram",        # 388 small imgs fit easily in 15GB
-        patience=5,         # early-stop once val mAP plateaus
+        patience=PATIENCE,  # early-stop once val mAP plateaus
+        fraction=FRACTION,
         lr0=0.002,          # fine-tune LR (lower than the 0.01 default)
         lrf=0.01,
         warmup_epochs=2,
