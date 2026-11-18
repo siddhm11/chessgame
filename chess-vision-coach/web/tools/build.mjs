@@ -44,9 +44,12 @@ for (const f of fs.readdirSync(path.join(ROOT, "chess_vision")).sort()) {
 copy(path.join(WEB, "src", "py", "cvc_web.py"), path.join(DIST, "py", "cvc_web.py"));
 python.push("cvc_web.py");
 
-// Model.
+// Models: the piece model, plus the optional board-corner detector
+// (chess_vision/board_corners.py; the app works without it).
 fs.rmSync(path.join(DIST, "models"), { recursive: true, force: true });
 copy(path.join(ROOT, "chess_vision", "models", MODEL), path.join(DIST, "models", MODEL));
+const extraModels = ["board-corners.onnx"].filter((f) => fs.existsSync(path.join(ROOT, "chess_vision", "models", f)));
+for (const f of extraModels) copy(path.join(ROOT, "chess_vision", "models", f), path.join(DIST, "models", f));
 
 // python-chess wheel, pinned by the server's requirements.txt.
 const pin = fs.readFileSync(path.join(ROOT, "requirements.txt"), "utf8").match(/^chess==([\d.]+)/m)[1];
@@ -68,7 +71,7 @@ for (const f of ["stockfish-19-lite-single.js", "stockfish-19-lite-single.wasm"]
   copy(path.join(NM, "stockfish", "bin", f), path.join(DIST, "engine", f));
 }
 
-fs.writeFileSync(path.join(DIST, "manifest.json"), JSON.stringify({ model: MODEL, chessWheel, python }, null, 2));
+fs.writeFileSync(path.join(DIST, "manifest.json"), JSON.stringify({ model: MODEL, extraModels, chessWheel, python }, null, 2));
 
 let total = 0;
 const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => {

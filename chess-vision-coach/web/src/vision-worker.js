@@ -56,6 +56,9 @@ async function boot() {
   const modelPath = "/app/chess_vision/models/" + manifest.model;
   const modelBytes = await fetchBytes(BASE + "models/" + manifest.model);
   py.FS.writeFile(modelPath, modelBytes);
+  for (const f of manifest.extraModels || []) {
+    py.FS.writeFile("/app/chess_vision/models/" + f, await fetchBytes(BASE + "models/" + f));
+  }
   py.runPython('import sys; sys.path.insert(0, "/app")');
   web = py.pyimport("cvc_web");
 
