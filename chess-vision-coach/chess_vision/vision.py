@@ -716,6 +716,13 @@ class ClassicalBackend:
             quad = self._largest_quad(img_bgr, dilate_iter=dilate_iter)
             if quad is not None:
                 consider(quad.astype("float32"))
+        # Learned corner detector (chess_vision/board_corners.py): one more
+        # candidate, snapped and judged like the others, so it can only add a
+        # better fit. Without its model file this is a no-op.
+        from chess_vision import board_corners
+        learned = board_corners.predict_quad(img_bgr)
+        if learned is not None:
+            consider(learned)
         # The sliding scan is the slowest step (~0.5 s); only pay for it when
         # the cheaper candidates didn't already land a confident grid fit.
         if best_score < self._GOOD_FIT:
