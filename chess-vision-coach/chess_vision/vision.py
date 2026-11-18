@@ -277,15 +277,19 @@ class ClassicalBackend:
 
     @staticmethod
     def _order_points(pts: np.ndarray) -> np.ndarray:
+        """Order 4 corners top-left, top-right, bottom-right, bottom-left.
+
+        Sorted by angle around the centroid (clockwise on screen), then
+        rotated to start at the corner with the smallest x + y. The older
+        "argmin x+y / argmin y-x" rule could give two labels to the same point
+        when the board appears as a diamond (photographed at ~45 degrees),
+        collapsing the warp; this order is always a proper permutation.
+        """
         pts = pts.reshape(4, 2).astype("float32")
-        ordered = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        d = np.diff(pts, axis=1).ravel()
-        ordered[0] = pts[np.argmin(s)]  # top-left
-        ordered[2] = pts[np.argmax(s)]  # bottom-right
-        ordered[1] = pts[np.argmin(d)]  # top-right
-        ordered[3] = pts[np.argmax(d)]  # bottom-left
-        return ordered
+        c = pts.mean(axis=0)
+        cw = pts[np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))]
+        start = int(np.argmin(cw.sum(axis=1)))
+        return np.roll(cw, -start, axis=0).astype("float32")
 
     @staticmethod
     def _checkerboard_score(board: np.ndarray) -> float:

@@ -48,7 +48,6 @@ os.environ.setdefault("CVC_BACKEND", "model")
 from chess_vision import vision  # noqa: E402
 
 DATASET = Path("/tmp/chess-dataset/labeled_originals")
-FT = ROOT / "finetune_data" / "images"
 PLACEMENT_RE = re.compile(r"^([rnbqkpRNBQKP1-8]+(?:-[rnbqkpRNBQKP1-8]+){7})")
 TINT = 0.80  # app/main.py CONF_MAYBE: below this a square is tinted
 
@@ -79,6 +78,83 @@ def conf_to_grid(psc: dict) -> list[list[float]]:
     return g
 
 
+class MoveJudge:
+    """Best-move agreement: the outcome a user actually cares about.
+
+    Stockfish (fixed depth, White to move -- the photos don't record whose
+    turn it is) on the predicted position vs on the true one. `same`: the
+    identical move. `good`: the predicted position's best move, played on the
+    TRUE board, is legal and at most GOOD_CP worse than the true best move.
+    An illegal or unparseable predicted position counts as a disagreement.
+    True positions that are themselves illegal or finished are skipped.
+    """
+
+    DEPTH, GOOD_CP = 12, 50
+
+    def __init__(self):
+        import chess.engine
+        sys.path.insert(0, str(ROOT))
+        from app.engine import find_stockfish
+        path = find_stockfish()
+        self.engine = chess.engine.SimpleEngine.popen_uci(path) if path else None
+        self._cache: dict[str, tuple] = {}
+
+    def _best(self, board: chess.Board):
+        key = board.fen()
+        if key not in self._cache:
+            info = self.engine.analyse(board, chess.engine.Limit(depth=self.DEPTH))
+            self._cache[key] = (info["pv"][0], info["score"].white())
+        return self._cache[key]
+
+    def _score_after(self, board: chess.Board, move) -> int:
+        b = board.copy()
+        b.push(move)
+        if b.is_checkmate():
+            return 100000
+        info = self.engine.analyse(b, chess.engine.Limit(depth=self.DEPTH - 1))
+        return info["score"].white().score(mate_score=100000)
+
+    def judge(self, truth_grid, pred_grid) -> tuple[bool, bool] | None:
+        """(same, good), or None when the true position can't be scored."""
+        if self.engine is None:
+            return None
+        true_b = chess.Board(f"{grid_placement(truth_grid)} w - - 0 1")
+        if not true_b.is_valid() or true_b.is_game_over():
+            return None
+        true_move, _ = self._best(true_b)
+        if pred_grid is None:
+            return False, False
+        pred_b = chess.Board(f"{grid_placement(pred_grid)} w - - 0 1")
+        if not pred_b.is_valid() or pred_b.is_game_over():
+            return False, False
+        pred_move, _ = self._best(pred_b)
+        if pred_move == true_move:
+            return True, True
+        if pred_move not in true_b.legal_moves:
+            return False, False
+        best = self._score_after(true_b, true_move)
+        got = self._score_after(true_b, pred_move)
+        return False, got >= best - self.GOOD_CP
+
+    def close(self):
+        if self.engine:
+            self.engine.quit()
+
+
+def grid_placement(grid) -> str:
+    rows = []
+    for row in grid:
+        out, run = "", 0
+        for ch in row:
+            if ch == ".":
+                run += 1
+            else:
+                out += (str(run) if run else "") + ch
+                run = 0
+        rows.append(out + (str(run) if run else ""))
+    return "/".join(rows)
+
+
 def evaluate(items, label):
     """items: (path, truth_grid[, orientation[, true_corners, use_corners]]).
     Returns a metrics dict."""
@@ -92,6 +168,16 @@ def evaluate(items, label):
     finder = vision._get_default_backend()  # exposes last_board_score
 
     board_hits = board_checked = 0
+    judge = MoveJudge()
+    move_scored = move_same = move_good = 0
+
+    def score_move(truth, pred):
+        nonlocal move_scored, move_same, move_good
+        r = judge.judge(truth, pred)
+        if r is not None:
+            move_scored += 1
+            move_same += r[0]
+            move_good += r[1]
     for item in items:
         path, truth = item[0], item[1]
         orientation = item[2] if len(item) > 2 else "white"
@@ -112,6 +198,7 @@ def evaluate(items, label):
         if res.detection_failed:
             fallback += 1
             errors_per_board.append(64)
+            score_move(truth, None)
             per_photo.append({"photo": path.name, "wrong": 64, "fallback": True})
             sq += 64
             continue
@@ -146,8 +233,10 @@ def evaluate(items, label):
             "min_conf": round(min(min(r) for r in conf), 3),
         })
         perfect += wrong == 0
+        score_move(truth, pred)
         within2 += wrong <= 2
 
+    judge.close()
     n = len(errors_per_board)
     if n == 0:
         return None
@@ -160,6 +249,8 @@ def evaluate(items, label):
         "type_given_found": type_ok / max(1, found),
         "perfect_boards": perfect,
         "within_2": within2,
+        "best_move_same": (move_same, move_scored),
+        "best_move_good": (move_good, move_scored),
         "fallbacks": fallback,
         "crashes": crashes,
         "wrong_squares": sum(min(e, 64) for e in errors_per_board) - 64 * fallback,
@@ -184,6 +275,10 @@ def evaluate(items, label):
         f"wrong={out['wrong_squares']} (flagged {flagged_wrong}, silent {silent})  "
         f"fallback={fallback} crash={crashes}  p50={out['p50_s']:.2f}s p95={out['p95_s']:.2f}s"
     )
+    if move_scored:
+        print(f"  {label:<10} best move: same {move_same}/{move_scored} "
+              f"({move_same / move_scored:.0%}), good (<= {MoveJudge.GOOD_CP}cp worse) "
+              f"{move_good}/{move_scored} ({move_good / move_scored:.0%})")
     return out
 
 
@@ -195,9 +290,7 @@ def _board_within_quarter_square(path, found, truth) -> bool:
     with Image.open(path) as im:
         w, h = im.size
     def px(pts):
-        a = np.array(pts, dtype=float) * [w, h]
-        s, d = a.sum(1), np.diff(a, axis=1).ravel()
-        return np.array([a[np.argmin(s)], a[np.argmin(d)], a[np.argmax(s)], a[np.argmax(d)]])
+        return vision.ClassicalBackend._order_points(np.array(pts, dtype=float) * [w, h])
     f, t = px(found), px(truth)
     side = max(np.linalg.norm(t[i] - t[(i + 1) % 4]) for i in range(4))
     return bool(np.linalg.norm(f - t, axis=1).max() <= side / 8 / 4)
@@ -281,8 +374,10 @@ def main():
     backend = vision._get_default_backend()
     print(f"backend={type(backend).__name__} model={getattr(backend, 'model_path', '-')}")
 
-    val_stems = {p.stem for p in (FT / "val").glob("*.jpg")}
-    train_stems = {p.stem for p in (FT / "train").glob("*.jpg")}
+    # The split the shipped model was trained on, pinned in the repo (re-running
+    # prepare_finetune_dataset.py with today's board finder gives a different one).
+    split = json.loads((ROOT / "bench" / "samryan18_split.json").read_text())
+    val_stems, train_stems = set(split["val"]), set(split["train"])
     buckets = {"val": [], "rejected": [], "train": []}
     for p in sorted(DATASET.glob("*.JPG")):
         t = truth_grid(p.name)

@@ -96,3 +96,20 @@ def test_full_pipeline_reads_board_on_mat():
                                   backend=vision.ClassicalBackend())
     assert not result.detection_failed
     assert result.fen.split()[0] == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+
+
+@pytest.mark.parametrize("angle", [0, 30, 44, 45, 46, 60, 89, 135, 200, 315])
+def test_order_points_is_a_permutation_at_any_rotation(angle):
+    """A board photographed at ~45 degrees appears as a diamond. The old
+    sum/difference ordering gave two corners the same label there and the
+    warp collapsed (seen on ChessReD photos with the annotated corners)."""
+    t = np.deg2rad(angle)
+    square = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], float) * 100
+    rot = square @ np.array([[np.cos(t), np.sin(t)], [-np.sin(t), np.cos(t)]]) + 300
+    rng = np.random.default_rng(angle)
+    got = vision.ClassicalBackend._order_points(rng.permutation(rot))
+    assert sorted(map(tuple, got.round(3))) == sorted(map(tuple, rot.astype("float32").round(3)))
+    # Clockwise on screen (y down): positive signed area in image coordinates.
+    x, y = got[:, 0], got[:, 1]
+    assert 0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y) > 0
+    assert np.argmin(got.sum(axis=1)) == 0
