@@ -1,0 +1,18 @@
+{
+  "name": "chess-vision-coach-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Chess Vision Coach running entirely in the browser (Pyodide + Stockfish WASM).",
+  "type": "module",
+  "scripts": {
+    "runtime": "node tools/fetch_runtime.mjs",
+    "build": "node tools/fetch_runtime.mjs && node tools/build.mjs",
+    "bench": "node tools/node_bench.mjs",
+    "serve": "node tools/serve.mjs"
+  },
+  "devDependencies": {
+    "onnxruntime-web": "1.23.2",
+    "pyodide": "0.27.7",
+    "stockfish": "19.0.1"
+  }
+}

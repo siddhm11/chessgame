@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chess Vision Coach</title>
+  <meta name="description" content="Photograph a chessboard, get the position and the best move. Runs entirely in your browser: photos never leave your device.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%99%9A%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="web.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-title" href="./">&#9818; Chess Vision Coach</a>
+    <span class="site-tag">photo &rarr; position &rarr; best move</span>
+  </header>
+
+  <main id="app">
+    <div id="boot" class="boot">
+      <div class="boot-row"><span class="spinner"></span> <span id="boot-text">Starting…</span></div>
+      <div class="boot-bar"><div id="boot-fill"></div></div>
+      <p class="muted">First visit downloads the chess reader (about 45&nbsp;MB, cached afterwards).
+        Everything runs on your device &mdash; your photos are never uploaded.</p>
+    </div>
+
+    <!-- Upload view -->
+    <div id="upload-view" class="upload-view" hidden>
+      <div id="upload-error" class="banner banner-error" hidden></div>
+      <div class="card">
+        <h2>Photograph or upload a chessboard</h2>
+        <p class="muted">Shoot from above the board for the most reliable read. You can
+          fix any misread piece on the next screen.</p>
+        <form id="upload-form">
+          <label class="field">
+            <span class="field-label">Chessboard photo</span>
+            <input type="file" id="photo-input" accept="image/*" required>
+          </label>
+          <fieldset class="radio-group">
+            <legend>Which side is closer to the camera?</legend>
+            <label><input type="radio" name="orientation" value="white" checked> White closer</label>
+            <label><input type="radio" name="orientation" value="black"> Black closer</label>
+          </fieldset>
+          <fieldset class="radio-group">
+            <legend>Side to move</legend>
+            <label><input type="radio" name="side_to_move" value="white" checked> White</label>
+            <label><input type="radio" name="side_to_move" value="black"> Black</label>
+          </fieldset>
+          <div class="actions">
+            <button type="submit" class="btn btn-primary" id="analyze-btn" disabled>Analyze position</button>
+            <span id="upload-spinner" class="busy" hidden><span class="spinner"></span> Reading the board&hellip;</span>
+          </div>
+        </form>
+      </div>
+      <p class="muted small">Works best on standard tournament-style sets. <span id="runtime-note"></span></p>
+    </div>
+
+    <!-- Analysis view -->
+    <div id="analyze-view" class="analyze-layout" hidden>
+      <section class="col col-left">
+        <h2>Your photo</h2>
+        <div class="photo-wrap" id="photo-wrap">
+          <img class="photo" id="photo" alt="your chessboard photo">
+          <svg class="board-outline" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+            <polygon id="board-poly" points=""></polygon>
+          </svg>
+          <button type="button" class="corner-handle" data-i="0" aria-label="Board corner 1 (top-left). Drag, or use arrow keys."></button>
+          <button type="button" class="corner-handle" data-i="1" aria-label="Board corner 2 (top-right). Drag, or use arrow keys."></button>
+          <button type="button" class="corner-handle" data-i="2" aria-label="Board corner 3 (bottom-right). Drag, or use arrow keys."></button>
+          <button type="button" class="corner-handle" data-i="3" aria-label="Board corner 4 (bottom-left). Drag, or use arrow keys."></button>
+        </div>
+        <div class="corner-actions">
+          <span class="muted corner-hint" id="corner-hint"></span>
+          <button type="button" class="btn" id="reread-btn">Re-read board</button>
+        </div>
+
+        <form id="reanalyze-form">
+          <fieldset class="radio-group">
+            <legend>Which side is closer to the camera?</legend>
+            <label><input type="radio" name="orientation" value="white" checked> White closer</label>
+            <label><input type="radio" name="orientation" value="black"> Black closer</label>
+          </fieldset>
+          <fieldset class="radio-group">
+            <legend>Side to move</legend>
+            <label><input type="radio" name="side_to_move" value="white" checked> White</label>
+            <label><input type="radio" name="side_to_move" value="black"> Black</label>
+          </fieldset>
+          <span id="reanalyze-spinner" class="busy" hidden><span class="spinner"></span> Re-reading&hellip;</span>
+        </form>
+
+        <h2>FEN</h2>
+        <div class="fen-row"><code id="fen-text" class="fen-text"></code></div>
+        <div class="actions">
+          <button type="button" class="btn" id="copy-fen">Copy FEN</button>
+          <button type="button" class="btn" id="download-fen">Download .fen</button>
+          <a class="btn" id="lichess-link" target="_blank" rel="noopener">Open in Lichess</a>
+          <button type="button" class="btn" id="new-photo">New photo</button>
+        </div>
+      </section>
+
+      <section class="col col-right">
+        <div id="status-banner"></div>
+        <div id="notes-banner"></div>
+        <div id="board-container" class="board-container">
+          <div class="board">
+            <div id="board-svg"></div>
+            <div class="square-grid" id="square-grid"></div>
+          </div>
+          <div class="conf-legend" id="conf-legend" hidden>
+            <span class="conf-chip conf-chip-red"></span> low confidence
+            <span class="conf-chip conf-chip-amber"></span> uncertain
+            <span class="conf-legend-note" id="conf-count"></span>
+          </div>
+        </div>
+        <div id="fen-status"></div>
+
+        <div class="actions engine-controls">
+          <button class="btn btn-primary" id="best-move-btn">Get best move</button>
+          <label class="level-field">
+            <span>Strength</span>
+            <select id="level">
+              <option value="fast">Fast</option>
+              <option value="normal" selected>Normal</option>
+              <option value="strong">Strong</option>
+            </select>
+          </label>
+          <span id="engine-spinner" class="busy" hidden><span class="spinner"></span> Stockfish is thinking&hellip;</span>
+        </div>
+        <div id="best-move-panel" class="best-move-panel"></div>
+      </section>
+    </div>
+
+    <div id="piece-picker" class="picker" role="dialog" aria-label="Set square">
+      <div class="picker-title">Set <span id="picker-square"></span></div>
+      <div class="picker-grid">
+        <button class="picker-btn white" data-piece="wK">&#9812;</button>
+        <button class="picker-btn white" data-piece="wQ">&#9813;</button>
+        <button class="picker-btn white" data-piece="wR">&#9814;</button>
+        <button class="picker-btn white" data-piece="wB">&#9815;</button>
+        <button class="picker-btn white" data-piece="wN">&#9816;</button>
+        <button class="picker-btn white" data-piece="wP">&#9817;</button>
+        <button class="picker-btn black" data-piece="bK">&#9818;</button>
+        <button class="picker-btn black" data-piece="bQ">&#9819;</button>
+        <button class="picker-btn black" data-piece="bR">&#9820;</button>
+        <button class="picker-btn black" data-piece="bB">&#9821;</button>
+        <button class="picker-btn black" data-piece="bN">&#9822;</button>
+        <button class="picker-btn black" data-piece="bP">&#9823;</button>
+        <button class="picker-btn empty" data-piece="empty">Empty</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    Runs entirely in your browser &mdash; photos never leave your device.
+    Vision quality depends on angle, lighting and piece set; tap any square to fix a misread.
+    <a href="https://github.com/siddhm11/chessgame">Source</a> &middot; engine: Stockfish (GPLv3).
+  </footer>
+</body>
+</html>

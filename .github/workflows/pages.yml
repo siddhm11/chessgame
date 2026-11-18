@@ -1,0 +1,81 @@
+name: web-app
+
+# Builds the in-browser version of Chess Vision Coach (chess-vision-coach/web),
+# tests it end-to-end in headless Chromium, and publishes it to GitHub Pages
+# from the main branch. One-time setup: Settings -> Pages -> Source: GitHub Actions.
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "chess-vision-coach/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chess-vision-coach/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: chess-vision-coach/web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: npm ci
+
+      - name: Fetch the Python runtime (checksums verified)
+        run: node tools/fetch_runtime.mjs
+
+      - name: Build the site
+        run: node tools/build.mjs
+
+      - name: End-to-end test in Chromium (both model runtimes)
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+          mkdir -p /tmp/photos && cd /tmp/photos
+          base=https://raw.githubusercontent.com/samryan18/chess-dataset/master/labeled_originals
+          for f in 8-1Nk1b2p-8-2pBp3-p7-2P3P1-1PbK3P-8.JPG r2q1rk1-pp1bbppp-2npp3-8-2P2P2-1NN3P1-PP1Q1PBP-R4RK1.JPG; do
+            curl -fsSL -o "$f" "$base/$f"
+          done
+          cd "$GITHUB_WORKSPACE/chess-vision-coach/web"
+          node tools/e2e.mjs /tmp/photos/*.JPG
+          node tools/e2e.mjs --no-jspi /tmp/photos/*.JPG
+          rm -f dist/e2e-last.png
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: chess-vision-coach/web/dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
