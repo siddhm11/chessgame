@@ -21,8 +21,9 @@ async function fetchBytes(url) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+let ort = null;
 async function startOrt(modelBytes) {
-  const ort = await import("./ort/ort.wasm.min.mjs");
+  ort ??= await import("./ort/ort.wasm.min.mjs");
   ort.env.wasm.wasmPaths = BASE + "ort/";
   ort.env.logLevel = "error";   // CPU-detection warnings are noise here
   ort.env.wasm.numThreads = self.crossOriginIsolated
@@ -36,7 +37,7 @@ async function startOrt(modelBytes) {
     return out[outName].data;
   };
   const probe = await jsRun(new Float32Array(3 * 640 * 640));
-  return { jsRun, rows: probe.length / 8400 };
+  return { jsRun, shape: [1, probe.length / 8400, 8400] };
 }
 
 async function boot() {
@@ -56,8 +57,10 @@ async function boot() {
   const modelPath = "/app/chess_vision/models/" + manifest.model;
   const modelBytes = await fetchBytes(BASE + "models/" + manifest.model);
   py.FS.writeFile(modelPath, modelBytes);
+  const extra = {};
   for (const f of manifest.extraModels || []) {
-    py.FS.writeFile("/app/chess_vision/models/" + f, await fetchBytes(BASE + "models/" + f));
+    extra[f] = await fetchBytes(BASE + "models/" + f);
+    py.FS.writeFile("/app/chess_vision/models/" + f, extra[f]);
   }
   py.runPython('import sys; sys.path.insert(0, "/app")');
   web = py.pyimport("cvc_web");
@@ -65,8 +68,10 @@ async function boot() {
   progress("Starting the piece model…", 85);
   if (JSPI) {
     try {
-      const { jsRun, rows } = await startOrt(modelBytes);
-      runtime = web.init(modelPath, jsRun, py.toPy([1, rows, 8400]));
+      const piece = await startOrt(modelBytes);
+      const corner = extra["board-corners.onnx"] ? await startOrt(extra["board-corners.onnx"]) : null;
+      runtime = web.init(modelPath, piece.jsRun, py.toPy(piece.shape),
+        corner ? corner.jsRun : null, corner ? py.toPy(corner.shape) : null);
     } catch (err) {
       console.warn("onnxruntime-web unavailable, using OpenCV:", err);
     }

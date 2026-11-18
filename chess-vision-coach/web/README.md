@@ -9,7 +9,7 @@ host).
 | piece | runs as |
 |---|---|
 | board finder, sanity checks, position logic | the server's own `chess_vision` Python package, unchanged, in [Pyodide](https://pyodide.org) (Python on WebAssembly) with numpy, OpenCV and Pillow |
-| piece model (`yolov8n640-chess-finetuned.onnx`) | **onnxruntime-web** where the browser supports JSPI (Chrome/Edge 137+): same engine as the server. Elsewhere OpenCV's DNN module inside Python |
+| piece model (`yolov8n640-chess-finetuned.onnx`) and board-corner model (`board-corners.onnx`) | **onnxruntime-web** where the browser supports JSPI (Chrome/Edge 137+): same engine as the server. Elsewhere OpenCV's DNN module inside Python |
 | engine | Stockfish 19 lite, single-threaded WASM |
 | UI | `src/index.html` + `src/app.js`, same layout and features as the server app |
 
@@ -21,8 +21,8 @@ Measured in headless Chromium on a 4-core server CPU (`tools/e2e.mjs`):
 
 | | fast path (onnxruntime-web) | compatibility (OpenCV) |
 |---|---|---|
-| first load | ~5 s + download (~45 MB, then cached) | same |
-| read a photo | **~1.8 s** (5 s worst case) | ~6 s (9 s worst case) |
+| first load | ~5 s + download (~58 MB, then cached) | same |
+| read a photo | **~2.3 s** (6 s worst case) | ~7 s (10 s worst case) |
 | best move (normal) | ~1.3 s | same |
 
 Phones are slower; expect roughly 2x.
@@ -33,7 +33,7 @@ Phones are slower; expect roughly 2x.
 cd chess-vision-coach/web
 npm ci
 node tools/fetch_runtime.mjs      # Pyodide + numpy/OpenCV/Pillow wheels, sha256-checked
-node tools/build.mjs              # -> dist/  (static site, ~56 MB)
+node tools/build.mjs              # -> dist/  (static site, ~69 MB)
 node tools/serve.mjs 8080         # http://localhost:8080
 node tools/e2e.mjs photo.JPG ...  # headless Chromium end-to-end test
 node tools/e2e.mjs --no-jspi photo.JPG   # same, on the compatibility path

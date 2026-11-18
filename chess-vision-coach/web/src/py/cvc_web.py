@@ -59,14 +59,22 @@ class _JsSession:
         return [out.reshape(self._shape)]
 
 
-def init(model_path: str, js_run=None, output_shape=None) -> str:
-    """Load the model. With `js_run`, inference goes to onnxruntime-web."""
+def init(model_path: str, js_run=None, output_shape=None,
+         corner_js_run=None, corner_output_shape=None) -> str:
+    """Load the models. With `js_run`, piece inference goes to
+    onnxruntime-web; with `corner_js_run`, so does the optional board-corner
+    detector (chess_vision/board_corners.py)."""
     global _backend, runtime_name
     backend = ModelBackend(model_path)
     backend._load()   # OpenCV session + imgsz/class map from the ONNX metadata
     if js_run is not None:
         backend._session = _JsSession(js_run, list(output_shape))
         runtime_name = "onnxruntime-web"
+    if corner_js_run is not None:
+        from chess_vision import board_corners
+
+        session = _JsSession(corner_js_run, list(corner_output_shape))
+        board_corners._runner = lambda blob: session.run(None, {"images": blob})[0]
     _backend = backend
     return runtime_name
 
