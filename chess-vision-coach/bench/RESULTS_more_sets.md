@@ -198,3 +198,57 @@ CVC_BACKEND=model .venv/bin/python -I bench/full_eval.py --photos /data/set4_pre
 
 Unit tests for the converters and scorer, all synthetic:
 `tests/test_more_sets_prepare.py`.
+
+## Board-corner detector (learned candidate for the board finder)
+
+**Why.** On ChessReD2K test (angled phone photos from a player's seat) the
+classical board finder said "no board" on 91/306 photos and landed within ¼
+square of the true corners on only 213/306. On those photos, board *finding*
+was the bottleneck, not piece reading.
+
+**What.** `chess_vision/models/board-corners.onnx` is YOLOv8n, one class,
+"corner": a box centred on each corner of the playing area, imgsz 640, 12.2 MB
+fp32. `chess_vision/board_corners.py` runs it with onnxruntime, or with OpenCV
+DNN when onnxruntime is missing (outputs agree to 3e-4), and returns the 4
+best corners if they form a plausible convex quad.
+
+`ClassicalBackend.locate_board` adds that quad as **one more candidate**,
+after the contour quads and before the sliding scan. It is snapped by
+`_refine_quad` and judged by the same sharp grid fit, so it can only add a
+better-fitting crop, never bypass the judge. Without the file (or with
+`CVC_CORNER_MODEL=0`) behaviour is unchanged.
+
+Corners are detected **unordered**. A 4-keypoint pose model needs a fixed
+order (top-left first, or a1 first), and that order flips abruptly as the
+board rotates in the photo: the same physical corner swaps labels. Detecting
+"a corner" avoids that; the 4 points are ordered geometrically afterwards
+(`_order_points`).
+
+**Data.** `bench/board_corners_prepare.py` uses the ChessReD2K train split
+(1,442 photos) and its val split (330), with the annotated corners, photos
+resized to 640. The box side is one board square. The ChessReD2K test split,
+set 4 and samryan18 were never used for training. CPU training: 18 epochs at
+4 min each; val mAP50 0.995, mAP50-95 0.92.
+
+**Gate** (current piece model throughout; `full_eval.py`, `board_presence_eval.py`):
+
+| check | before (no detector) | after |
+|---|---|---|
+| ChessReD2K test (306), no corners: board within ¼ square | 213/306 | **305/306** |
+| ChessReD2K test: fallbacks ("no board") | 91 | **0** |
+| ChessReD2K test: per-square exact (fallback = 64 wrong) | 41.07% | **57.97%** |
+| ChessReD2K test: silent wrong squares | 979 (on 215 read boards, 4.6/board) | 1,594 (on 306 boards, 5.2/board) |
+| ChessReD2K test: best move same | 0/300 | 0/300 |
+| samryan18 val (68) | 99.52%, 60 perfect, 12 silent, best move 57/63 | identical |
+| samryan18 rejected (44) | 99.33%, 32 perfect, 3 silent, best move 35/42 | identical |
+| val + EXIF / val + dark | 99.72% / 99.77% | identical |
+| set 4 (27), no corners | 45.25%, 4 fallbacks, ¼-square 21/27 | identical |
+| board presence at the app's cut-off (fit < 0.68) | 94/94 ordinary photos rejected, 0/508 boards wrongly rejected | identical |
+| pytest | 202 + 4 new | 206 passed |
+
+The detector fixes board finding on angled photos and changes nothing on the
+others. The remaining ChessReD errors are the piece model's: it doesn't know
+that piece set. That is why silent errors rise: 91 more boards are now read
+instead of falling back. The combined piece retrain is meant to fix that.
+Negatives: OpenCV samples/data + scikit-image data (125 images, 31 of them
+hard negatives such as calibration checkerboards; those behave exactly as before).
