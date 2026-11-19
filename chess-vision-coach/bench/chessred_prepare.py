@@ -69,6 +69,29 @@ def split_ids(splits: dict, split: str) -> list[int]:
     raise SystemExit(f"split '{split}' not found; splits has keys: {sorted(splits)}")
 
 
+def camera_side(c: dict[str, list[float]]) -> str:
+    """'w' or 'b': the orientation label full_eval passes to analyze_image.
+
+    In the app, 'w' (the default) means "show the board as the finder turned
+    it" and 'b' means "rotate that 180 degrees". The finder orders the corners
+    it is given by angle, starting at the top-left-most one (as
+    ClassicalBackend._order_points does), and turns a sideways warp upright
+    itself. So the label depends only on where a8 lands in the warp: at the
+    top-left (White at the bottom) or at a right-angle corner (a side view,
+    auto-turned) -> 'w'; at the bottom-right (Black at the bottom) -> 'b'.
+    Labelling side views by which edge is lower in the photo flipped about
+    half of the correctly read side views in the eval.
+    """
+    import math
+    pts = [c[k] for k in CORNER_KEYS]          # a8, h8, h1, a1
+    cx = sum(p[0] for p in pts) / 4
+    cy = sum(p[1] for p in pts) / 4
+    order = sorted(range(4), key=lambda i: math.atan2(pts[i][1] - cy, pts[i][0] - cx))
+    start = min(range(4), key=lambda j: pts[order[j]][0] + pts[order[j]][1])
+    order = order[start:] + order[:start]       # warp corners TL, TR, BR, BL
+    return "b" if order.index(0) == 2 else "w"
+
+
 def corner_table(annotations: dict) -> dict[int, dict[str, list[float]]]:
     raw = annotations.get("corners") or []
     table = {}
@@ -116,7 +139,7 @@ def main(argv=None) -> int:
             continue
         # Corners are named from White's point of view: bottom_left is a1.
         # If a1/h1 sit lower in the photo than a8/h8, White is nearer the camera.
-        white_near = (c["bottom_left"][1] + c["bottom_right"][1]) > (c["top_left"][1] + c["top_right"][1])
+        white_near = camera_side(c) == "w"
         name = f"{placement(pieces.get(image_id, {})).replace('/', '-')}__{'w' if white_near else 'b'}__{image_id}{src.suffix.lower()}"
         shutil.copy2(src, args.out / name)
         w, h = im.get("width"), im.get("height")

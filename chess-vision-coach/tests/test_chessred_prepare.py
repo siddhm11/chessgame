@@ -11,6 +11,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bench"))
@@ -77,3 +78,19 @@ def test_symbol_and_placement_helpers():
     assert cp.symbol("empty") is None
     sq = {f + r: s for f, r, s in [("e", "1", "K"), ("e", "8", "k")]}
     assert cp.placement(sq) == "4k3/8/8/8/8/8/8/4K3"
+
+
+# Board corners (a8, h8, h1, a1) for a square board seen from each side.
+_TL, _TR, _BR, _BL = [0, 0], [10, 0], [10, 10], [0, 10]
+
+
+@pytest.mark.parametrize("a8, h8, h1, a1, expected", [
+    (_TL, _TR, _BR, _BL, "w"),   # White at the bottom
+    (_BR, _BL, _TL, _TR, "b"),   # Black at the bottom
+    (_TR, _BR, _BL, _TL, "w"),   # side view: the finder turns it upright itself
+    (_BL, _TL, _TR, _BR, "w"),   # the other side view
+    ([5, 0], [10, 5], [5, 10], [0, 5], "w"),   # diagonal (diamond), a8 at the top
+])
+def test_camera_side_matches_what_the_app_shows(a8, h8, h1, a1, expected):
+    c = {"top_left": a8, "top_right": h8, "bottom_right": h1, "bottom_left": a1}
+    assert cp.camera_side(c) == expected
