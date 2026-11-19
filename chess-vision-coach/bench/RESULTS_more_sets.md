@@ -252,3 +252,51 @@ that piece set. That is why silent errors rise: 91 more boards are now read
 instead of falling back. The combined piece retrain is meant to fix that.
 Negatives: OpenCV samples/data + scikit-image data (125 images, 31 of them
 hard negatives such as calibration checkerboards; those behave exactly as before).
+
+## Combined piece retrain (sets 1-3): trained, gated, NOT swapped
+
+**Data:** `/data/mix`, never committed.
+- Train: ChessReD2K train (1,441) + samryan18 train (388) + set 3 train (352) repeated 3×, so 2,885 images.
+- Val: ChessReD2K val (330) + samryan18 val (68) + set 3 val (28), so 426 images.
+- Never trained on: ChessReD2K test, set 3 test, set 4, samryan18 val/rejected.
+- ChessReD labels come from the corrected `chessred_prepare.py` (56efed5).
+
+**Training:**
+- yolov8n, 640 px, 25 epochs, patience 6, CPU.
+- Same hyperparameters as `finetune_train.py`: lr0 0.002, lrf 0.01, warmup 2, degrees 8, fliplr 0.5, no mosaic, hsv 0.015/0.4/0.4.
+- All 25 epochs ran. Val mAP50 was 0.988 and mAP50-95 0.976.
+- ONNX export (opset 12, simplified) has the same IO as the shipped model: `images [1,3,640,640]` → `output0 [1,17,8400]`, same `names` map, loads in onnxruntime and in cv2.dnn.
+
+**Gate:**
+- Every number below comes from the same code at c75eea8, with the board-corner detector on.
+- ChessReD rows use the corrected `/data/chessred_test` labels.
+- "Silent" means wrong with conf ≥ 0.80. "Tints" means false tints: right squares with conf < 0.80. Best move uses Stockfish depth 12.
+
+| set | original (008fc66) | branch ca6c364 | combined |
+|---|---|---|---|
+| samryan18 val (68) | 99.52%, 60 perfect, 12 silent, bm 57/63 | 99.66%, 65 perfect, 13 silent, bm 61/63 | 99.66%, 65 perfect, 12 silent, bm 62/63 |
+| samryan18 rejected (44) | 99.33%, 32 perfect, 3 silent, bm 35/42 | 99.86%, 41 perfect, 3 silent, bm 42/42 | 99.82%, 40 perfect, 2 silent, bm 41/42 |
+| ChessReD2K test (306), auto | 62.92%, 0 perfect, 3.51 silent/b, 15.6 tints/b, bm 1/300 | **99.14%, 251 perfect, 0.36 silent/b**, 3.4 tints/b, bm 254/300 | 98.71%, 237 perfect, 0.58 silent/b, 4.3 tints/b, bm 249/300 |
+| ChessReD2K test, true corners | 62.84%, 0 perfect, 3.73 silent/b | **99.31%, 252 perfect, 0.12 silent/b**, bm 257/300 | 98.40%, 235 perfect, 0.60 silent/b, bm 251/300 |
+| set 3 test (36), crop | 84.07%, 0 perfect, 4.28 silent/b, 7.6 tints/b, bm 0/35 | 93.49%, 0 perfect, 1.39 silent/b, 7.7 tints/b, bm 7/35 | **94.75%, 8 perfect**, 1.94 silent/b, **1.3 tints/b**, bm 9/35 |
+| set 3 test, pipeline | 87.37%, 0 perfect, 3.28 silent/b, 7.4 tints/b, bm 2/35 | 93.32%, 0 perfect, 1.72 silent/b, 6.4 tints/b, bm 9/35 | **94.84%, 8 perfect, 1.58 silent/b**, 6.4 tints/b, bm 10/35 |
+| set 4 (27), auto | 45.25%, 0 silent, 4 fallbacks | **59.43%, 0 silent**, 38.0 tints/b, 4 fallbacks | 57.70%, 0.56 silent/b, 34.0 tints/b, 4 fallbacks |
+| set 4, true corners | 52.72%, 0.44 silent/b | **71.64%, 0 silent**, 45.9 tints/b | 69.10%, 0 silent, 44.2 tints/b |
+
+Best move on set 4 is 0/27 for every model.
+
+**Decision: keep ca6c364's model.** The rule was "hold the other sets within noise AND clearly help set 3 and/or set 4". The combined model fails the first half:
+- **ChessReD2K test drops beyond noise:** 14 fewer perfect boards, silent errors per board up 0.36 → 0.58, and with true corners 0.12 → 0.60, five times as many.
+- **samryan18 is flat.**
+- **Set 3 gains** 8 perfect boards against 0, +1.3–1.5 pts exact, and in crop mode far fewer false tints. But in crop mode silent errors per board rise 1.39 → 1.94.
+- **Set 4 gets slightly worse**, and it now has silent errors where ca6c364 had none.
+
+The set-3 gain is narrow: the test set is 36 frames from 2 videos of one board. It does not pay for the ChessReD regression or for silent errors on set 4.
+
+If set 3 matters later, two options could keep ca6c364's ChessReD numbers:
+- fine-tune ca6c364 briefly on set 3 + a ChessReD replay, at a low learning rate;
+- oversample set 3 less than 3×.
+
+Nothing shipped changed, so pytest, `board_presence_eval.py` and the browser e2e were not rerun.
+
+**Set 4 orientation check:** labels as prepared score 52.72% with the original model. With every white/black piece swapped they score 37.91%. So the white-to-move = camera-side reading is right, and set 4 needs no relabelling.
