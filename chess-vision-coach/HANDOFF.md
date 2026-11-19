@@ -21,9 +21,16 @@
 - Product: drag-the-corners board fix, non-chessboard rejection, works
   inside a Hugging Face Space iframe, public-deployment safeguards (body
   limit, image bombs, global engine/vision limits, session handling).
-- Deploy: `deploy_hf_space.py` -- but HF requires a PRO account to create
-  Docker Spaces. Dockerfile pinned (Debian 12 digest), never built here
-  (no Docker daemon). Bundle smoke-tested from an empty folder.
+- **Free deploy: `web/`**, the whole app in the browser (Pyodide runs the
+  same `chess_vision` package; onnxruntime-web or OpenCV DNN runs the
+  models; Stockfish WASM). `.github/workflows/pages.yml` builds, tests in
+  Chromium (both runtimes) and publishes to GitHub Pages from `main`
+  (needs Settings -> Pages -> Source: GitHub Actions). ~2.3 s per photo.
+- Board-corner detector (`chess_vision/board_corners.py`,
+  `models/board-corners.onnx`): angled ChessReD boards found 305/306 (was
+  213); optional, a no-op without the file.
+- Server deploy: Dockerfile (pinned, never built here) or
+  `deploy_hf_space.py` (HF needs PRO).
 
 ---
 

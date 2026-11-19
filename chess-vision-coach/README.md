@@ -21,23 +21,36 @@ photo -> find the board -> read the pieces -> check against chess rules
 
 Photos that don't contain a chessboard are rejected instead of being read.
 
+## Two ways to run it
+
+- **In the browser (free, no server):** `web/` is a static site that runs the
+  same Python vision code, the model and Stockfish entirely on the visitor's
+  device. Photos never leave it. Host it free on GitHub Pages; see
+  [`web/README.md`](web/README.md).
+- **As a server:** FastAPI + htmx (below), for your own machine or any
+  container host.
+
 ## How accurate is it?
 
-Measured with `bench/full_eval.py` on 636 photo analyses with known positions
-(details and how to reproduce: [`bench/RESULTS.md`](bench/RESULTS.md)):
+Measured with `bench/full_eval.py` and `bench/score_more_sets.py` on photos
+with known positions (details: [`bench/RESULTS.md`](bench/RESULTS.md),
+[`bench/RESULTS_more_sets.md`](bench/RESULTS_more_sets.md)):
 
-| photos | per-square accuracy |
-|---|---|
-| 68 held-out photos, same board/pieces as training | **99.8%** |
-| 44 harder held-out photos, same set | **99.3%** |
-| same, rotated via EXIF / darkened to 55% | 99.7% / 99.8% |
+| photos | squares right | boards perfect | same best move |
+|---|---|---|---|
+| 68 held-out overhead photos (green/white board, Staunton set) | **99.66%** | 65/68 | 97% |
+| 44 harder held-out photos, same set | **99.86%** | 41/44 | 100% |
+| 306 ChessReD phone photos (another set, angled), board found automatically | **99.13%** | 249/306 | 88% |
 
-**Important limit: other boards and piece sets.** The model was trained on
-one board style (green-and-white roll-up board, Staunton pieces, shot from
-above). On two photos of *other* sets it read 37/64 and 30/64 squares wrong.
-The app flags those reads (every wrong square tinted, plus a note), but it
-can't read them. Making it work on any set needs more varied training data;
-see *Next steps*.
+"Silent" errors (wrong *and* not tinted) are 0.2–0.4 per board; everything
+else the app is unsure of is tinted so you can tap to fix it.
+
+**Limits.** It knows these two board styles well. On piece sets it has never
+seen (a wooden Staunton set, a plastic tournament set) most squares are still
+misread; the app flags such boards (every square tinted, plus a note) rather
+than pretending. Photos taken from the side of the board are turned automatically;
+on ChessReD 3/162 (test) and 29/169 (validation) came out upside down. The app
+says when it turned a photo, and one tap flips it.
 
 ## Run it locally
 
@@ -66,11 +79,14 @@ Stockfish is found on `PATH`, at `/usr/games/stockfish`, `/usr/local/bin`,
 
 ## Deploy
 
-`python deploy_hf_space.py --space <you>/chess-vision-coach` uploads exactly
-the 25 files the app needs to a Hugging Face Docker Space. **Hugging Face now
-requires a PRO account to create Docker Spaces**; the script checks this first.
-The Dockerfile works on any container host. See
-[`DEPLOY_HF_SPACE.md`](DEPLOY_HF_SPACE.md).
+**Free: GitHub Pages (recommended).** `.github/workflows/pages.yml` builds
+the browser version, tests it in headless Chromium and publishes it from
+`main`. One-time: repo **Settings -> Pages -> Source: GitHub Actions**, then
+merge to `main`. Details: [`web/README.md`](web/README.md).
+
+**Server:** the Dockerfile runs on any container host (Cloud Run, Fly.io,
+Render, a VM). `deploy_hf_space.py` targets a Hugging Face Docker Space, which
+needs a PRO account; see [`DEPLOY_HF_SPACE.md`](DEPLOY_HF_SPACE.md).
 
 ## Settings (environment variables)
 
@@ -101,30 +117,37 @@ re-upload instead of showing a wrong board. Each is pinned by a test.
   sliding scan) and snaps each onto the exact 8×8 grid (`_refine_quad`), so
   the best grid fit wins. Below a fit of 0.68 there is no board; below 0.80
   the whole read is tinted as doubtful.
-- `chess_vision/model_backend.py`: fine-tuned YOLOv8n (ONNX, 640 px) on the
-  warped board, with a mirrored second pass; 90° rotation recovery.
+- `chess_vision/board_corners.py`: a small YOLOv8n corner detector adds one
+  more board candidate (finds angled boards: 305/306 ChessReD photos).
+- `chess_vision/model_backend.py`: YOLOv8n (ONNX, 640 px) trained on
+  samryan18 + ChessReD, on the warped board, with a mirrored second pass;
+  90° rotation recovery. Runs on onnxruntime, or OpenCV DNN without it.
 - `chess_vision/sanity.py`: chess-rule repairs and flags.
 - `app/`: FastAPI + htmx pages, Stockfish over UCI, in-memory sessions.
 
 ## Tests and evaluation
 
 ```bash
-pytest -q                                    # 168 tests (CI runs them on every push)
+pytest -q                                    # 211 tests (CI runs them on every push)
 python bench/full_eval.py                    # accuracy on the labelled photo set
 python bench/e2e_load.py --users 4           # real HTTP, concurrent users
 python bench/smoke_bundle.py                 # the deploy bundle, from an empty folder
 python bench/board_presence_eval.py ...      # "is there a board?" thresholds
+cd web && node tools/e2e.mjs photo.JPG       # the browser build, end to end
 ```
 
 ## Next steps
 
-- **Train on other piece sets.** The single biggest improvement. ChessReD
-  (10,800 phone photos of another set, CC BY-NC-SA) can't be downloaded from
-  the environment this was built in. `bench/chessred_prepare.py` turns it into
-  a scored test set; the same corner labels can produce training crops.
-- **Deploy**: needs a Hugging Face PRO account or another container host.
+- **More piece sets.** The model reads what it was trained on. Each new set
+  needs a few hundred labelled photos; the cheapest source is photographing
+  a game move by move (the moves label every photo). `prepare_mixed_dataset.py`
+  and `finetune_train.py` retrain on CPU in about 2-3 hours.
+- **Side-view orientation**: still the main source of silent errors on
+  angled photos.
 
 ## License
 
-Model weights are Ultralytics YOLO derivatives (AGPL-3.0): fine for personal
-and learning use; commercial use needs an Ultralytics license or another model.
+Model weights: Ultralytics YOLO derivatives (AGPL-3.0) **and** trained on
+ChessReD (CC BY-NC-SA 4.0), so **non-commercial** use only. A commercial
+version needs a model trained without ChessReD and a commercial Ultralytics
+license (or another detector). Stockfish and python-chess are GPL-3.0.
