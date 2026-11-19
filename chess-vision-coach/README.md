@@ -45,10 +45,11 @@ with known positions (details: [`bench/RESULTS.md`](bench/RESULTS.md),
 "Silent" errors (wrong *and* not tinted) are 0.2–0.4 per board; everything
 else the app is unsure of is tinted so you can tap to fix it.
 
-**Limits.** It knows these two board styles well. On piece sets it has never
-seen (a wooden Staunton set, a plastic tournament set) most squares are still
-misread; the app flags such boards (every square tinted, plus a note) rather
-than pretending. Photos taken from the side of the board are turned automatically;
+**Limits.** It knows these two board styles well. On piece sets it was never
+trained on it is much weaker: a plastic tournament set (green/white vinyl
+board) reads ~93% of squares but rarely a whole board perfectly, and a wooden
+set ~59% (72% with the corners marked). Every square still has to be checked
+there; the app tints what it is unsure of and flags impossible material. Photos taken from the side of the board are turned automatically;
 on ChessReD 3/162 (test) and 29/169 (validation) came out upside down. The app
 says when it turned a photo, and one tap flips it.
 

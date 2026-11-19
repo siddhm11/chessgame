@@ -145,9 +145,11 @@ the same presets (`web/src/app.js`).
 
 ## Known limitations
 
-1. **Unseen piece sets** read badly (set 3 tournament set ~85%, set 4 wooden
-   set ~50% per square before the combined retrain). The impossible-material
-   rule tints such boards. More sets need labelled photos.
+1. **Unseen piece sets** are weaker: set 3 (plastic tournament set) 93% per
+   square, 0/36 boards perfect; set 4 (wooden set) 59% (72% with corners).
+   A combined retrain with set 3 added was tried and gated out (it cost
+   ChessReD accuracy); see `bench/RESULTS_more_sets.md`. More sets need
+   labelled photos.
 2. **Side views**: the auto-turn is wrong on 29/169 ChessReD val side views
    (3/162 test); the note tells the user how to flip.
 3. **Server**: in-memory sessions, one worker; one 4-core box reads about one
