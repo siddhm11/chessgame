@@ -2,16 +2,22 @@
 
 **Branch:** `claude/chess-vision-coach-DwzKV`  
 **Repo:** `siddhm11/chessgame`  
-**Last commit:** sideways-photo tiebreak, reload keeps your board  
-**Tests:** 172 passing (CI green on every push)  
-**Status:** feature-complete for its trained board style; NOT yet general.
+**Last commit:** piece model retrained on ChessReD2K + samryan18  
+**Tests:** 211 passed (CI green on every push)  
+**Status:** reads two board styles (samryan18, ChessReD) at ~99% per square; weights non-commercial.
 **Read `bench/RESULTS.md` and `README.md` first.**
 
-- Familiar board/pieces: 99.8% per square on held-out photos (636 analyses).
-- Other piece sets: the model fails (37/64 and 30/64 wrong on two photos);
-  the app flags those reads (impossible-material rule) instead of showing
-  them as trusted. Fix = training data from more sets (ChessReD; its host
-  is blocked from the build environment; `bench/chessred_prepare.py` ready).
+- Piece model retrained on ChessReD2K + samryan18 (`prepare_mixed_dataset.py`).
+  samryan18 held-out val 99.66% per square (65/68 perfect); ChessReD2K test
+  (other set, angled phone photos, never trained on) **99.15%** with the
+  annotated corners, **99.13%** with automatic board finding (~4 in 5
+  boards perfect). Silent errors 0.2-0.4 per board. See `bench/RESULTS.md`.
+- **Weights are non-commercial**: ChessReD is CC BY-NC-SA 4.0, on top of
+  the AGPL-3.0 of the Ultralytics fine-tune.
+- Other piece sets (iStock photos): still read wrong, but every square is
+  tinted (impossible-material rule), 0 silent errors.
+- Largest remaining silent-error source on angled photos: the automatic
+  side-view turn (wrong on 29/169 ChessReD val side views, 3/162 test).
 - Product: drag-the-corners board fix, non-chessboard rejection, works
   inside a Hugging Face Space iframe, public-deployment safeguards (body
   limit, image bombs, global engine/vision limits, session handling).
@@ -138,7 +144,7 @@ _EMPTY_CONF     = 0.90   # confidence assigned to empty cells (no real "is empty
 
 | file | size | architecture | input | classes | source |
 |---|---|---|---|---|---|
-| `yolov8n640-chess-finetuned.onnx` | 12 MB | YOLOv8n | 640×640 | 13 (board + 12 pieces) | **fine-tuned in-repo** @640px, 13 epochs — current default (AGPL-3.0) |
+| `yolov8n640-chess-finetuned.onnx` | 13 MB | YOLOv8n | 640×640 | 13 (board + 12 pieces) | **trained in-repo** on ChessReD2K + samryan18 @640px, 25 epochs — current default (AGPL-3.0 **and** CC BY-NC-SA 4.0: non-commercial) |
 | `yolov8n-chess-finetuned.onnx` | 12 MB | YOLOv8n | 416×416 | 13 (board + 12 pieces) | fine-tuned in-repo @416px — fallback (AGPL-3.0) |
 | `yolov8m-chess.onnx` | 99 MB | YOLOv8m | 640×640 | 13 (board + 12 pieces) | NAKSTStudio/yolov8m-chess-piece-detection (AGPL-3.0) |
 | `yolo11n-chess.onnx` | 11 MB | YOLO11n | 416×416 | 12 pieces | same repo, mobile export (AGPL-3.0) |
@@ -149,9 +155,13 @@ from `prepare_finetune_dataset.py` output — see "Fine-tuning" below. It is
 specialized for REAL photos; for rendered/synthetic diagrams use
 `CVC_BACKEND=classical`.
 
-**All AGPL-3.0** (the fine-tune inherits Ultralytics' license). Fine for
-personal/learning use; a commercial deployment would need an Ultralytics
-commercial license or a different base model.
+**All AGPL-3.0** (the fine-tune inherits Ultralytics' license). The
+default `yolov8n640-chess-finetuned.onnx` is additionally trained on
+ChessReD (CC BY-NC-SA 4.0, Masouris & van Gemert, data.4tu.nl), so its
+weights are **non-commercial and share-alike**. Fine for personal/learning
+use; a commercial deployment needs a commercial Ultralytics license or a
+different base model, *and* training data without the NC clause (or the
+previous samryan18-only weights, in git history at 4be5c94).
 
 ---
 
@@ -383,7 +393,25 @@ chess-vision-coach/
 
 ---
 
-## Fine-tuning (how the default model was made)
+## Retrain on ChessReD (how the current default model was made)
+
+Data: ChessReD annotations.json + chessred2k.zip (not the 24.6 GB full
+zip) from data.4tu.nl, unpacked OUTSIDE the repo; never commit dataset
+files; read with `python -I`. Exact commands, hyperparameters and the
+old-vs-new gate are in `bench/RESULTS.md` ("Retrain on ChessReD").
+Summary: `prepare_mixed_dataset.py` (1441 ChessReD2K train + 388 samryan18
+train, crops made exactly like the app's model input, cell-sized boxes
+from the annotated squares) -> `finetune_train.py` with
+`CVC_FT_DATA/IMGSZ=640/EPOCHS=25/PATIENCE=6`, yolov8n.pt base, lr0 0.002,
+degrees 8, fliplr 0.5, mosaic 0; ~2.5 h on 4 CPU cores. For a combined
+retrain with more sets, add their crops to the same layout.
+
+Evaluating: `bench/chessred_prepare.py` (orientation label now matches
+what the app shows; the old label flipped half the side views) and
+`bench/full_eval.py --photos DIR [--use-corners]`; `bench/square_dump.py`
+dumps per-square truth/pred/conf for calibration work (use val, not test).
+
+## Fine-tuning (how the previous samryan18-only model was made)
 
 The 18.9% recall of the pre-trained models was a domain gap, not a tuning
 problem (lowering `_CONF_THRESHOLD` to 0.15 and CLAHE preprocessing both
@@ -416,6 +444,13 @@ Result: per-square 98.3%, recall 98.7%, type|p 96.4% (see Benchmark results).
 ## What to work on next
 
 **Highest-value items in order:**
+
+0. **Side-view orientation.** On ChessReD val the automatic turn of side
+   views is wrong on 29/169 photos; those boards are read rotated and look
+   confident. Candidates: a pawn/king-placement prior in the tie-break,
+   validated on ChessReD val and `bench/sideways_tiebreak.py`.
+   Then: a commercial-safe model (data without NC terms), deployment
+   (HF Spaces needs PRO for Docker), more piece sets.
 
 1. **Train the yolov8m @ 640 variant on GPU** (`finetune_colab.ipynb`) for a
    higher accuracy ceiling. The nano model still has ~3 piece-type confusion
